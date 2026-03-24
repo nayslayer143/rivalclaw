@@ -21,11 +21,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RivalClaw arb-only paper trader")
     parser.add_argument("--migrate", action="store_true", help="Create DB tables")
     parser.add_argument("--run", action="store_true", help="Run simulation loop")
+    parser.add_argument("--tune", action="store_true", help="Run self-tuning cycle")
     args = parser.parse_args()
 
     if args.migrate:
         simulator.migrate()
     elif args.run:
         simulator.run_loop()
+    elif args.tune:
+        import self_tuner
+        self_tuner.run_tuning()
     else:
         parser.print_help()
