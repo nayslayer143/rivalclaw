@@ -340,7 +340,12 @@ def _check_near_expiry_momentum(market: dict, balance: float) -> TradeDecision |
     """
     Bet on continuation when price is strongly directional
     and market is close to resolution.
+    EXCLUDES Kalshi bracket contracts — their price volatility kills stop-losses.
     """
+    # Skip bracket contracts — they have extreme price swings that trigger stops
+    if market.get("strike_type") == "between":
+        return None
+
     minutes = _parse_expiry_minutes(market)
     if minutes is None or minutes <= 0:
         return None
