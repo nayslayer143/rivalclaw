@@ -102,19 +102,48 @@ CREATE INDEX IF NOT EXISTS idx_cycle_metrics_time ON cycle_metrics(cycle_started
 
 INSERT OR IGNORE INTO context (chat_id, key, value)
 VALUES ('rivalclaw', 'starting_balance', '1000.00');
+
+CREATE TABLE IF NOT EXISTS kalshi_extra (
+    id INTEGER PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    event_ticker TEXT,
+    yes_bid REAL,
+    yes_ask REAL,
+    no_bid REAL,
+    no_ask REAL,
+    last_price REAL,
+    volume_24h REAL,
+    open_interest REAL,
+    close_time TEXT,
+    strike_type TEXT,
+    cap_strike REAL,
+    floor_strike REAL,
+    rules_primary TEXT,
+    fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kalshi_extra_market_time ON kalshi_extra(market_id, fetched_at);
 """
 
 
 def migrate():
     with _get_conn() as conn:
         conn.executescript(MIGRATION_SQL)
+        # Add venue columns (idempotent — ignore if already exist)
+        for tbl in ("market_data", "paper_trades"):
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN venue TEXT DEFAULT 'polymarket'")
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
     print(f"[rivalclaw] Migration complete. DB: {DB_PATH}")
 
 
 def run_loop():
     """Full simulation loop with per-cycle timing instrumentation."""
     sys.path.insert(0, str(Path(__file__).parent))
-    import polymarket_feed as feed
+    import polymarket_feed as poly_feed
+    import kalshi_feed
+    import spot_feed
     import paper_wallet as wallet
     import trading_brain as brain
     import graduation as grad
@@ -123,10 +152,14 @@ def run_loop():
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
     print(f"[rivalclaw] Run loop starting — {cycle_started_iso}")
 
-    # 1. Fetch market data (timed)
+    # 1. Fetch market data from both venues (timed)
     t0 = time.time()
-    markets = feed.fetch_markets()
+    poly_markets = poly_feed.fetch_markets()
+    kalshi_markets = kalshi_feed.fetch_markets()
+    markets = poly_markets + kalshi_markets
     fetch_ms = (time.time() - t0) * 1000
+    print(f"[rivalclaw] Fetched: {len(poly_markets)} Polymarket + "
+          f"{len(kalshi_markets)} Kalshi = {len(markets)} total")
 
     if not markets:
         print("[rivalclaw] No markets available. Skipping trades.")
@@ -134,18 +167,20 @@ def run_loop():
                            (time.time() * 1000 - cycle_started_at_ms))
         return
 
-    # 2. Get wallet state
+    # 2. Get wallet state + spot prices for fair value
     state = wallet.get_state()
+    spot_prices = spot_feed.get_spot_prices()
     print(f"[rivalclaw] Wallet: ${state['balance']:.2f} | "
           f"Positions: {state['open_positions']} | "
-          f"Win rate: {state['win_rate']*100:.0f}%")
+          f"Win rate: {state['win_rate']*100:.0f}% | "
+          f"Spots: {len(spot_prices)} cryptos")
 
-    # 3. Analyze markets (timed)
+    # 3. Analyze all markets with all strategies (timed)
     t0 = time.time()
-    decisions = brain.analyze(markets, state)
+    decisions = brain.analyze(markets, state, spot_prices=spot_prices)
     analyze_ms = (time.time() - t0) * 1000
     opportunities_detected = len(decisions)
-    print(f"[rivalclaw] Brain returned {opportunities_detected} arb signals")
+    print(f"[rivalclaw] Brain returned {opportunities_detected} signals")
 
     # 4. Execute trades (timed)
     t0 = time.time()
@@ -166,9 +201,9 @@ def run_loop():
             print(f"[rivalclaw] Rejected: {d.market_id} (cap or kelly)")
     wallet_ms = (time.time() - t0) * 1000
 
-    # 5. Check stops (always runs)
+    # 5. Check stops (always runs, both venues)
     try:
-        current_prices = feed.get_latest_prices()
+        current_prices = wallet._get_all_latest_prices()
         closed = wallet.check_stops(current_prices)
         for c in closed:
             sign = "+" if (c["pnl"] or 0) >= 0 else ""

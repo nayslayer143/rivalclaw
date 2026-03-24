@@ -77,15 +77,26 @@ def _compute_balance(starting, prices):
     return starting + closed + unrealized
 
 
+def _get_all_latest_prices():
+    """Combined latest prices from all venues."""
+    prices = {}
+    try:
+        import polymarket_feed
+        prices.update(polymarket_feed.get_latest_prices())
+    except Exception:
+        pass
+    try:
+        import kalshi_feed
+        prices.update(kalshi_feed.get_latest_prices())
+    except Exception:
+        pass
+    return prices
+
+
 def get_state():
     """Return full wallet state. Balance always derived, never cached. Identical to Mirofish."""
     starting = _get_starting_balance()
-    try:
-        from rivalclaw.polymarket_feed import get_latest_prices
-        prices = get_latest_prices()
-    except ImportError:
-        import polymarket_feed
-        prices = polymarket_feed.get_latest_prices()
+    prices = _get_all_latest_prices()
     balance = _compute_balance(starting, prices)
 
     conn = _get_conn()
@@ -183,6 +194,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
                       f"{sim_metadata['adjusted_price']:.3f}, fill {sim_metadata['fill_rate']:.0%}]")
 
     ts = datetime.datetime.utcnow().isoformat()
+    venue = (decision.metadata or {}).get("venue", "polymarket")
     conn = _get_conn()
     try:
         cur = conn.execute("""
@@ -191,8 +203,8 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
              status, confidence, reasoning, strategy, opened_at,
              experiment_id, instance_id,
              cycle_started_at_ms, decision_generated_at_ms,
-             trade_executed_at_ms, signal_to_trade_latency_ms)
-            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)
+             trade_executed_at_ms, signal_to_trade_latency_ms, venue)
+            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?)
         """, (
             decision.market_id, decision.question, decision.direction,
             shares, entry_price, amount_usd,
@@ -200,7 +212,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
             reasoning, getattr(decision, "strategy", "arbitrage"), ts,
             EXPERIMENT_ID, INSTANCE_ID,
             cycle_started_at_ms, decision.decision_generated_at_ms,
-            trade_executed_at_ms, signal_to_trade_ms,
+            trade_executed_at_ms, signal_to_trade_ms, venue,
         ))
         conn.commit()
         trade_id = cur.lastrowid

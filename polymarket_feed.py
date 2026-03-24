@@ -129,7 +129,7 @@ def fetch_markets():
             markets.append({
                 "market_id": market_id, "question": question, "category": category,
                 "yes_price": yes_price, "no_price": no_price,
-                "volume": volume, "end_date": end_date,
+                "volume": volume, "end_date": end_date, "venue": "polymarket",
             })
         conn.commit()
     finally:
@@ -158,6 +158,8 @@ def _load_cached_markets():
     finally:
         conn.close()
     markets = [dict(r) for r in rows]
+    for m in markets:
+        m.setdefault("venue", "polymarket")
     return _apply_category_filter(markets)
 
 
