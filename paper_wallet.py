@@ -195,6 +195,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
 
     ts = datetime.datetime.utcnow().isoformat()
     venue = (decision.metadata or {}).get("venue", "polymarket")
+    expected_edge = (decision.metadata or {}).get("edge", 0.0) if decision.metadata else 0.0
     conn = _get_conn()
     try:
         cur = conn.execute("""
@@ -203,8 +204,8 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
              status, confidence, reasoning, strategy, opened_at,
              experiment_id, instance_id,
              cycle_started_at_ms, decision_generated_at_ms,
-             trade_executed_at_ms, signal_to_trade_latency_ms, venue)
-            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?)
+             trade_executed_at_ms, signal_to_trade_latency_ms, venue, expected_edge)
+            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             decision.market_id, decision.question, decision.direction,
             shares, entry_price, amount_usd,
@@ -212,7 +213,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
             reasoning, getattr(decision, "strategy", "arbitrage"), ts,
             EXPERIMENT_ID, INSTANCE_ID,
             cycle_started_at_ms, decision.decision_generated_at_ms,
-            trade_executed_at_ms, signal_to_trade_ms, venue,
+            trade_executed_at_ms, signal_to_trade_ms, venue, expected_edge,
         ))
         conn.commit()
         trade_id = cur.lastrowid

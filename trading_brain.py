@@ -38,12 +38,12 @@ MIN_MOMENTUM_PRICE = float(os.environ.get("RIVALCLAW_MIN_MOMENTUM_PRICE", "0.78"
 
 # Annualized volatility estimates for crypto (conservative)
 CRYPTO_VOL = {
-    "dogecoin": 0.90,
-    "cardano": 0.80,
-    "binancecoin": 0.65,
-    "bitcoin-cash": 0.75,
-    "bitcoin": 0.60,
-    "ethereum": 0.65,
+    "dogecoin": float(os.environ.get("RIVALCLAW_VOL_DOGECOIN", "0.90")),
+    "cardano": float(os.environ.get("RIVALCLAW_VOL_CARDANO", "0.80")),
+    "binancecoin": float(os.environ.get("RIVALCLAW_VOL_BINANCECOIN", "0.65")),
+    "bitcoin-cash": float(os.environ.get("RIVALCLAW_VOL_BITCOIN_CASH", "0.75")),
+    "bitcoin": float(os.environ.get("RIVALCLAW_VOL_BITCOIN", "0.60")),
+    "ethereum": float(os.environ.get("RIVALCLAW_VOL_ETHEREUM", "0.65")),
 }
 
 # Series-to-underlying mapping (same as kalshi_feed)

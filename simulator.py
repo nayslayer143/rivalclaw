@@ -122,6 +122,25 @@ CREATE TABLE IF NOT EXISTS kalshi_extra (
     fetched_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_kalshi_extra_market_time ON kalshi_extra(market_id, fetched_at);
+
+CREATE TABLE IF NOT EXISTS spot_prices (
+    id INTEGER PRIMARY KEY,
+    crypto_id TEXT NOT NULL,
+    price_usd REAL NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spot_prices_crypto_time ON spot_prices(crypto_id, fetched_at);
+
+CREATE TABLE IF NOT EXISTS tuning_log (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    parameter TEXT NOT NULL,
+    old_value REAL NOT NULL,
+    new_value REAL NOT NULL,
+    reason TEXT NOT NULL,
+    sample_size INTEGER NOT NULL,
+    tuned_at TEXT NOT NULL
+);
 """
 
 
@@ -134,6 +153,10 @@ def migrate():
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN venue TEXT DEFAULT 'polymarket'")
             except sqlite3.OperationalError:
                 pass
+        try:
+            conn.execute("ALTER TABLE paper_trades ADD COLUMN expected_edge REAL")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     print(f"[rivalclaw] Migration complete. DB: {DB_PATH}")
 
@@ -170,6 +193,17 @@ def run_loop():
     # 2. Get wallet state + spot prices for fair value
     state = wallet.get_state()
     spot_prices = spot_feed.get_spot_prices()
+    # Log spot prices for realized vol computation (self-tuner)
+    if spot_prices:
+        conn = _get_conn()
+        try:
+            for crypto_id, price in spot_prices.items():
+                conn.execute(
+                    "INSERT INTO spot_prices (crypto_id, price_usd, fetched_at) VALUES (?,?,?)",
+                    (crypto_id, price, cycle_started_iso))
+            conn.commit()
+        finally:
+            conn.close()
     print(f"[rivalclaw] Wallet: ${state['balance']:.2f} | "
           f"Positions: {state['open_positions']} | "
           f"Win rate: {state['win_rate']*100:.0f}% | "
