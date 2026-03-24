@@ -22,6 +22,7 @@ if __name__ == "__main__":
     parser.add_argument("--migrate", action="store_true", help="Create DB tables")
     parser.add_argument("--run", action="store_true", help="Run simulation loop")
     parser.add_argument("--tune", action="store_true", help="Run self-tuning cycle")
+    parser.add_argument("--report", action="store_true", help="Generate hourly report")
     args = parser.parse_args()
 
     if args.migrate:
@@ -31,5 +32,10 @@ if __name__ == "__main__":
     elif args.tune:
         import self_tuner
         self_tuner.run_tuning()
+        import hourly_report
+        hourly_report.generate()
+    elif args.report:
+        import hourly_report
+        hourly_report.generate()
     else:
         parser.print_help()
