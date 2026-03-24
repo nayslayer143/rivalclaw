@@ -236,6 +236,56 @@ def _compute_bracket_fair_value(spot, floor_strike, cap_strike, minutes, vol):
     return max(0.005, min(0.995, fair))
 
 
+# Price bucket preference: 0.10-0.30 is the sweet spot ($101 avg profit)
+# 0.50-0.70 is the dead zone (negative EV). Scale edge requirement by bucket.
+BUCKET_EDGE_MULTIPLIER = {
+    # entry_price range: edge multiplier (lower = more trades in that bucket)
+    "sweet": 0.5,    # 0.10-0.30: HALVE the edge requirement — our best bucket
+    "good": 0.8,     # <0.10 or 0.30-0.50: slightly easier threshold
+    "neutral": 1.0,  # 0.70-0.90: standard threshold
+    "dead": 2.0,     # 0.50-0.70: DOUBLE the requirement — this range loses money
+    "extreme": 1.5,  # >0.90: high WR but tiny payoffs, not worth capital
+}
+
+def _bucket_multiplier(entry_price):
+    if 0.10 <= entry_price < 0.30:
+        return BUCKET_EDGE_MULTIPLIER["sweet"]
+    elif entry_price < 0.10 or (0.30 <= entry_price < 0.50):
+        return BUCKET_EDGE_MULTIPLIER["good"]
+    elif 0.50 <= entry_price < 0.70:
+        return BUCKET_EDGE_MULTIPLIER["dead"]
+    elif entry_price >= 0.90:
+        return BUCKET_EDGE_MULTIPLIER["extreme"]
+    return BUCKET_EDGE_MULTIPLIER["neutral"]
+
+
+def _get_realtime_vol(underlying_id):
+    """Compute realized vol from spot_prices if enough data, else use static."""
+    static_vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    try:
+        import sqlite3
+        db = os.environ.get("RIVALCLAW_DB_PATH", str(Path(__file__).parent / "rivalclaw.db"))
+        conn = sqlite3.connect(db)
+        rows = conn.execute(
+            "SELECT price_usd FROM spot_prices WHERE crypto_id=? ORDER BY fetched_at DESC LIMIT 200",
+            (underlying_id,)).fetchall()
+        conn.close()
+        prices = [r[0] for r in rows if r[0] and r[0] > 0]
+        if len(prices) < 30:
+            return static_vol
+        prices.reverse()
+        log_returns = [math.log(prices[i] / prices[i-1]) for i in range(1, len(prices))
+                       if prices[i] > 0 and prices[i-1] > 0]
+        if len(log_returns) < 10:
+            return static_vol
+        mean_r = sum(log_returns) / len(log_returns)
+        variance = sum((r - mean_r)**2 for r in log_returns) / len(log_returns)
+        realized = math.sqrt(variance) * math.sqrt(365.25 * 24 * 30)
+        return max(0.30, min(1.50, realized))
+    except Exception:
+        return static_vol
+
+
 def _check_fair_value(market, balance, spot_prices):
     if market.get("venue") != "kalshi":
         return None
@@ -249,7 +299,7 @@ def _check_fair_value(market, balance, spot_prices):
     spot = spot_prices.get(underlying_id)
     if not spot or spot <= 0:
         return None
-    vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    vol = _get_realtime_vol(underlying_id)
 
     # Bracket contracts: P(floor <= spot <= cap)
     if strike_type == "between":
@@ -268,9 +318,12 @@ def _check_fair_value(market, balance, spot_prices):
         fee_no = _kalshi_fee(no_price)
         edge_yes = fair - (yes_price + fee_yes)
         edge_no = (1.0 - fair) - (no_price + fee_no)
-        if edge_yes > MIN_FAIR_VALUE_EDGE and edge_yes >= edge_no:
+        # Apply price bucket preference — sweet spot gets lower threshold
+        thresh_yes = MIN_FAIR_VALUE_EDGE * _bucket_multiplier(yes_price)
+        thresh_no = MIN_FAIR_VALUE_EDGE * _bucket_multiplier(no_price)
+        if edge_yes > thresh_yes and edge_yes >= edge_no:
             direction, entry_price, confidence, edge = "YES", yes_price, min(fair, 0.90), edge_yes
-        elif edge_no > MIN_FAIR_VALUE_EDGE:
+        elif edge_no > thresh_no:
             direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.90), edge_no
         else:
             return None
@@ -280,7 +333,7 @@ def _check_fair_value(market, balance, spot_prices):
         return TradeDecision(
             market_id=market["market_id"], question=market.get("question", ""),
             direction=direction, confidence=confidence,
-            reasoning=f"FairVal/Bracket: spot=${spot:,.0f} [{floor_s:,.0f}-{cap_s:,.0f}] exp={minutes:.0f}m fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f}",
+            reasoning=f"FairVal/Bracket: spot=${spot:,.0f} [{floor_s:,.0f}-{cap_s:,.0f}] exp={minutes:.0f}m fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f} bkt={_bucket_multiplier(entry_price):.1f}x",
             strategy="fair_value_directional", amount_usd=amount, entry_price=entry_price,
             shares=amount / entry_price if entry_price > 0 else 0,
             decision_generated_at_ms=time.time() * 1000,
@@ -480,7 +533,91 @@ def _check_cross_strike_arb(event_markets: list[dict], balance: float) -> TradeD
 
 
 # ---------------------------------------------------------------------------
-# Strategy 5: Mean reversion (15-min crypto, bet against crowd at coin-flip)
+# Strategy 5: Adjacent bracket cone (amplifies fair_value by spreading bets)
+# ---------------------------------------------------------------------------
+
+def _check_bracket_cone(event_markets: list[dict], balance: float,
+                        spot_prices: dict) -> list[TradeDecision]:
+    """
+    Find the 2-3 brackets closest to current spot and buy YES on each.
+    Data shows 0.10-0.30 entry price range = $101 avg profit.
+    This spreads the hit zone so crypto doesn't need to land in one exact bracket.
+    """
+    brackets = [m for m in event_markets if m.get("strike_type") == "between"]
+    if len(brackets) < 5:
+        return []
+
+    # Find underlying
+    underlying_id = None
+    for m in brackets:
+        underlying_id = _find_underlying(m)
+        if underlying_id:
+            break
+    if not underlying_id:
+        return []
+
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return []
+
+    # Sort brackets by distance from spot (closest first)
+    def bracket_dist(m):
+        f = m.get("floor_strike") or 0
+        c = m.get("cap_strike") or 0
+        if f <= 0 or c <= 0:
+            return float('inf')
+        mid = (f + c) / 2
+        return abs(spot - mid)
+
+    sorted_brackets = sorted(brackets, key=bracket_dist)
+
+    # Take the 3 closest brackets with YES in sweet spot (0.05-0.40)
+    decisions = []
+    for m in sorted_brackets[:5]:
+        yes_price = m.get("yes_price", 0) or 0
+        if not (0.05 <= yes_price <= 0.40):
+            continue
+
+        minutes = _parse_expiry_minutes(m)
+        if minutes is None or minutes <= 2:
+            continue
+
+        vol = _get_realtime_vol(underlying_id)
+        floor_s = m.get("floor_strike") or 0
+        cap_s = m.get("cap_strike") or 0
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+        if fair is None:
+            continue
+
+        fee = _kalshi_fee(yes_price)
+        edge = fair - (yes_price + fee)
+        if edge <= MIN_FAIR_VALUE_EDGE * 0.5:  # Lower threshold for cone — diversification is the hedge
+            continue
+
+        confidence = min(fair, 0.85)
+        amount = _size_for_strategy("bracket_cone", confidence, yes_price, balance)
+        if amount is None:
+            continue
+
+        decisions.append(TradeDecision(
+            market_id=m["market_id"], question=m.get("question", ""),
+            direction="YES", confidence=confidence,
+            reasoning=f"Cone: spot=${spot:,.0f} [{floor_s:,.0f}-{cap_s:,.0f}] fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f}",
+            strategy="bracket_cone", amount_usd=amount, entry_price=yes_price,
+            shares=amount / yes_price if yes_price > 0 else 0,
+            decision_generated_at_ms=time.time() * 1000,
+            metadata={"edge": edge, "fair_value": fair, "spot": spot,
+                      "venue": "kalshi", "cone_size": len(decisions) + 1},
+        ))
+
+        if len(decisions) >= 3:  # Max 3 brackets per cone
+            break
+
+    return decisions
+
+
+# ---------------------------------------------------------------------------
+# Strategy 6: Mean reversion (15-min crypto, bet against crowd at coin-flip)
 # ---------------------------------------------------------------------------
 
 def _check_mean_reversion(market, balance, spot_prices):
@@ -923,6 +1060,16 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             decisions.append(d)
             seen_events.add(evt)
             stats["cross_strike_arb"] += 1
+
+    # Bracket cone (runs on event groups — buys 2-3 adjacent brackets near spot)
+    for evt, group in event_groups.items():
+        if evt in seen_events:
+            continue
+        cone = _check_bracket_cone(group, balance, spot)
+        if cone:
+            decisions.extend(cone)
+            seen_events.add(evt)
+            stats["bracket_cone"] += len(cone)
 
     # Per-market strategies
     for market in markets:
