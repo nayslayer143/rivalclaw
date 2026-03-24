@@ -230,7 +230,12 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
 
 
 def check_stops(current_prices):
-    """Check SL/TP/expiry on open positions. Identical to Mirofish."""
+    """
+    Check SL/TP/expiry on open positions.
+    KEY INSIGHT: Stop-losses are DISABLED for fast-resolving contracts (<60 min).
+    On 15-min contracts, stop-losses kill winners and can't save losers (price gaps
+    between cycles). Let them ride to expiry — the EV is what matters, not the path.
+    """
     now = datetime.datetime.utcnow()
     closed = []
     closed_updates = []
@@ -260,18 +265,28 @@ def check_stops(current_prices):
         pnl_pct = round(unrealized_pnl / t["amount_usd"], 10) if t["amount_usd"] > 0 else 0.0
 
         expired = False
+        minutes_to_expiry = float('inf')
         if t["end_date"]:
             try:
                 end = datetime.datetime.fromisoformat(t["end_date"].replace("Z", ""))
                 expired = now > end
+                minutes_to_expiry = (end - now).total_seconds() / 60.0
             except (ValueError, AttributeError):
                 pass
 
-        should_close = (
-            pnl_pct <= -STOP_LOSS_PCT or
-            pnl_pct >= TAKE_PROFIT_PCT or
-            expired
-        )
+        # Fast-resolving contracts (<60 min): NO stop-loss. Let them expire.
+        # Stop-losses are counterproductive on fast markets — they kill winners
+        # and can't limit losers (price gaps between 2-min cycles).
+        is_fast = minutes_to_expiry < 60
+
+        if is_fast:
+            should_close = expired
+        else:
+            should_close = (
+                pnl_pct <= -STOP_LOSS_PCT or
+                pnl_pct >= TAKE_PROFIT_PCT or
+                expired
+            )
 
         if should_close:
             status = "expired" if expired else ("closed_win" if unrealized_pnl >= 0 else "closed_loss")

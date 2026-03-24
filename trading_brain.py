@@ -222,12 +222,24 @@ def _check_arbitrage(market, balance):
 # Strategy 2: Fair value directional (Kalshi threshold contracts)
 # ---------------------------------------------------------------------------
 
+def _compute_bracket_fair_value(spot, floor_strike, cap_strike, minutes, vol):
+    """Fair value of a bracket: P(floor <= spot <= cap at expiry)."""
+    if spot <= 0 or floor_strike <= 0 or cap_strike <= 0 or minutes <= 0 or vol <= 0:
+        return None
+    if floor_strike >= cap_strike:
+        return None
+    p_above_floor = _compute_fair_value(spot, floor_strike, minutes, vol, "greater_or_equal")
+    p_above_cap = _compute_fair_value(spot, cap_strike, minutes, vol, "greater_or_equal")
+    if p_above_floor is None or p_above_cap is None:
+        return None
+    fair = p_above_floor - p_above_cap
+    return max(0.005, min(0.995, fair))
+
+
 def _check_fair_value(market, balance, spot_prices):
     if market.get("venue") != "kalshi":
         return None
     strike_type = market.get("strike_type", "")
-    if strike_type == "between":
-        return None  # Handled by cross_strike_arb
     minutes = _parse_expiry_minutes(market)
     if minutes is None or minutes <= 2 or minutes > 24 * 60:
         return None
@@ -237,6 +249,47 @@ def _check_fair_value(market, balance, spot_prices):
     spot = spot_prices.get(underlying_id)
     if not spot or spot <= 0:
         return None
+    vol = CRYPTO_VOL.get(underlying_id, 0.70)
+
+    # Bracket contracts: P(floor <= spot <= cap)
+    if strike_type == "between":
+        floor_s = market.get("floor_strike")
+        cap_s = market.get("cap_strike")
+        if not floor_s or not cap_s:
+            return None
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+        if fair is None:
+            return None
+        yes_price = market.get("yes_price", 0) or 0
+        if yes_price <= 0.01 or yes_price >= 0.99:
+            return None
+        fee_yes = _kalshi_fee(yes_price)
+        no_price = 1.0 - yes_price
+        fee_no = _kalshi_fee(no_price)
+        edge_yes = fair - (yes_price + fee_yes)
+        edge_no = (1.0 - fair) - (no_price + fee_no)
+        if edge_yes > MIN_FAIR_VALUE_EDGE and edge_yes >= edge_no:
+            direction, entry_price, confidence, edge = "YES", yes_price, min(fair, 0.90), edge_yes
+        elif edge_no > MIN_FAIR_VALUE_EDGE:
+            direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.90), edge_no
+        else:
+            return None
+        amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance)
+        if amount is None:
+            return None
+        return TradeDecision(
+            market_id=market["market_id"], question=market.get("question", ""),
+            direction=direction, confidence=confidence,
+            reasoning=f"FairVal/Bracket: spot=${spot:,.0f} [{floor_s:,.0f}-{cap_s:,.0f}] exp={minutes:.0f}m fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f}",
+            strategy="fair_value_directional", amount_usd=amount, entry_price=entry_price,
+            shares=amount / entry_price if entry_price > 0 else 0,
+            decision_generated_at_ms=time.time() * 1000,
+            metadata={"edge": edge, "fair_value": fair, "spot": spot,
+                      "strike": floor_s, "minutes_to_expiry": minutes,
+                      "vol": vol, "venue": "kalshi", "strike_type": "between"},
+        )
+
+    # Threshold contracts (original logic)
     if strike_type == "greater_or_equal":
         strike = market.get("floor_strike")
     elif strike_type == "less":
@@ -245,7 +298,6 @@ def _check_fair_value(market, balance, spot_prices):
         strike = market.get("floor_strike") or market.get("cap_strike")
     if not strike or strike <= 0:
         return None
-    vol = CRYPTO_VOL.get(underlying_id, 0.70)
     fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
     if fair is None:
         return None
