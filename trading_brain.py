@@ -65,8 +65,8 @@ SERIES_TO_UNDERLYING = {
     "KXBTC": "bitcoin", "KXBTCMAXD": "bitcoin", "KXETH": "ethereum",
 }
 
-# Proven strategies get full Kelly, new ones get quarter Kelly
-PROVEN_STRATEGIES = {"arbitrage", "fair_value_directional", "near_expiry_momentum"}
+# Proven strategies get full Kelly, new ones get fractional Kelly
+PROVEN_STRATEGIES = {"arbitrage", "fair_value_directional", "time_decay"}
 
 
 # ---------------------------------------------------------------------------
@@ -331,47 +331,103 @@ def _check_fair_value(market, balance, spot_prices):
 
 
 # ---------------------------------------------------------------------------
-# Strategy 3: Near-expiry momentum (no brackets)
+# Strategy 3: Spot momentum (NEW — replaces dead near_expiry_momentum)
 # ---------------------------------------------------------------------------
 
-def _check_near_expiry(market, balance):
-    if market.get("strike_type") == "between":
+MIN_SPOT_MOMENTUM_PCT = float(os.environ.get("RIVALCLAW_MIN_SPOT_MOMENTUM", "0.003"))  # 0.3% move
+
+def _check_spot_momentum(market, balance, spot_prices, spot_history):
+    """
+    When crypto spot has moved sharply in recent minutes, threshold/bracket
+    contracts may lag behind. Trade in the direction of momentum.
+    Uses spot_prices (current) vs spot_history (recent from DB).
+    """
+    if market.get("venue") != "kalshi":
         return None
     minutes = _parse_expiry_minutes(market)
-    if minutes is None or minutes <= 0:
+    if minutes is None or minutes <= 2 or minutes > 30:
         return None
-    hours = minutes / 60.0
-    if hours > NEAR_EXPIRY_HOURS:
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
         return None
+    current_spot = spot_prices.get(underlying_id)
+    if not current_spot or current_spot <= 0:
+        return None
+
+    # Need recent spot history to detect momentum
+    recent = spot_history.get(underlying_id, [])
+    if len(recent) < 3:  # Need at least 3 data points (~6 min of 2-min cycles)
+        return None
+
+    # Compute momentum: % change from oldest to newest
+    oldest_price = recent[0]
+    if oldest_price <= 0:
+        return None
+    momentum_pct = (current_spot - oldest_price) / oldest_price
+
+    if abs(momentum_pct) < MIN_SPOT_MOMENTUM_PCT:
+        return None
+
+    strike_type = market.get("strike_type", "")
     yes_price = market.get("yes_price", 0) or 0
     if yes_price <= 0.02 or yes_price >= 0.98:
         return None
-    venue = market.get("venue", "polymarket")
-    fee_fn = _kalshi_fee if venue == "kalshi" else _fee
-    time_boost = max(0, 1.0 - hours / NEAR_EXPIRY_HOURS) * 0.05
-    if yes_price >= MIN_MOMENTUM_PRICE:
-        direction, entry_price = "YES", yes_price
-        confidence = min(yes_price + time_boost, 0.95)
-    elif yes_price <= (1.0 - MIN_MOMENTUM_PRICE):
-        direction, entry_price = "NO", 1.0 - yes_price
-        confidence = min(entry_price + time_boost, 0.95)
+
+    # For threshold contracts: momentum UP → buy YES on "above" strikes near spot
+    # For bracket contracts: momentum toward bracket → buy YES
+    if strike_type == "between":
+        floor_s = market.get("floor_strike") or 0
+        cap_s = market.get("cap_strike") or 0
+        if floor_s <= 0 or cap_s <= 0:
+            return None
+        mid_bracket = (floor_s + cap_s) / 2
+        # Is spot moving TOWARD this bracket?
+        dist_now = abs(current_spot - mid_bracket)
+        dist_before = abs(oldest_price - mid_bracket)
+        if dist_now >= dist_before:
+            return None  # Moving away, not toward
+        # Spot is approaching this bracket — buy YES
+        direction = "YES"
+        entry_price = yes_price
+        edge = abs(momentum_pct) * 2  # Scale edge by momentum strength
+    elif strike_type in ("greater_or_equal", "greater"):
+        strike = market.get("floor_strike") or 0
+        if strike <= 0:
+            return None
+        if momentum_pct > 0 and current_spot > strike * 0.99:
+            # Upward momentum, spot near/above strike → YES
+            direction = "YES"
+            entry_price = yes_price
+            edge = momentum_pct
+        elif momentum_pct < 0 and current_spot < strike * 1.01:
+            # Downward momentum, spot near/below strike → NO
+            direction = "NO"
+            entry_price = 1.0 - yes_price
+            edge = abs(momentum_pct)
+        else:
+            return None
     else:
         return None
-    fee = fee_fn(entry_price)
-    edge = confidence - (entry_price + fee)
-    if edge <= MIN_EDGE:
+
+    fee = _kalshi_fee(entry_price)
+    edge_after_fee = edge - fee
+    if edge_after_fee <= MIN_EDGE:
         return None
-    amount = _size_for_strategy("near_expiry_momentum", confidence, entry_price, balance)
+
+    confidence = min(0.50 + edge * 2, 0.85)  # Conservative — momentum isn't certainty
+    amount = _size_for_strategy("spot_momentum", confidence, entry_price, balance)
     if amount is None:
         return None
+
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
-        reasoning=f"NearExpiry: {hours:.1f}h left yes={yes_price:.3f} edge={edge:.3f} [{venue}]",
-        strategy="near_expiry_momentum", amount_usd=amount, entry_price=entry_price,
+        reasoning=f"SpotMom: {underlying_id} {momentum_pct:+.2%} in {len(recent)*2}min, edge={edge_after_fee:.3f}",
+        strategy="spot_momentum", amount_usd=amount, entry_price=entry_price,
         shares=amount / entry_price if entry_price > 0 else 0,
         decision_generated_at_ms=time.time() * 1000,
-        metadata={"edge": edge, "hours_to_expiry": hours, "venue": venue},
+        metadata={"edge": edge_after_fee, "momentum_pct": momentum_pct,
+                  "spot": current_spot, "venue": "kalshi"},
     )
 
 
@@ -809,14 +865,46 @@ def _find_hedge(primary: TradeDecision, markets_by_event: dict[str, list[dict]],
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _load_spot_history(lookback_minutes=10):
+    """Load recent spot prices from DB for momentum detection."""
+    import sqlite3
+    from pathlib import Path
+    db = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=lookback_minutes)).isoformat()
+    try:
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT crypto_id, price_usd FROM spot_prices WHERE fetched_at > ? ORDER BY fetched_at ASC",
+            (cutoff,)).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    history = defaultdict(list)
+    for r in rows:
+        history[r["crypto_id"]].append(r["price_usd"])
+    return dict(history)
+
+
 def analyze(markets: list[dict], wallet: dict[str, Any],
             spot_prices: dict | None = None) -> list[TradeDecision]:
     """
-    Run all 8 strategies. One signal per event_ticker max (prevent bracket spam).
+    Run strategies. One signal per event_ticker max (prevent bracket spam).
     Pairs primary trades with hedge legs for defined-risk spreads.
+
+    Active strategies (ordered by edge quality):
+      1. arbitrage (pure arb, guaranteed)
+      2. fair_value_directional (proven winner: 50% WR, 2.7x ratio)
+      3. spot_momentum (NEW: ride crypto trends into lagging contracts)
+      4. vol_skew (realized > implied vol)
+      5. time_decay (proven: 5.1x ratio)
+      6. mean_reversion (testing: 1.7x ratio)
+
+    Killed: near_expiry_momentum (0.2x ratio, -$691, 48 trades)
     """
     balance = wallet.get("balance", 1000.0)
     spot = spot_prices or {}
+    spot_history = _load_spot_history()
     decisions = []
     seen_events = set()
     stats = defaultdict(int)
@@ -828,7 +916,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         if evt:
             event_groups[evt].append(m)
 
-    # Strategy 4: Cross-strike arb (runs on event groups, not individual markets)
+    # Cross-strike arb (runs on event groups)
     for evt, group in event_groups.items():
         d = _check_cross_strike_arb(group, balance)
         if d:
@@ -843,54 +931,46 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             stats["integrity"] += 1
             continue
 
-        # Skip if we already have a trade on this event
         evt = market.get("event_ticker", "")
         if evt and evt in seen_events:
             continue
 
-        # Run strategies in priority order (highest edge-quality first)
         d = None
 
-        # 1. Cross-outcome arb (guaranteed profit)
+        # 1. Cross-outcome arb
         d = d or _check_arbitrage(market, balance)
         if d:
             stats["arbitrage"] += 1
 
-        # 2. Fair value directional (strong math backing)
+        # 2. Fair value (THE moneymaker — proven 50% WR, 2.7x ratio)
         if not d:
             d = _check_fair_value(market, balance, spot)
             if d:
                 stats["fair_value"] += 1
 
-        # 3. Vol skew (realized > implied)
+        # 3. Spot momentum (NEW — ride crypto trends)
+        if not d:
+            d = _check_spot_momentum(market, balance, spot, spot_history)
+            if d:
+                stats["spot_momentum"] += 1
+
+        # 4. Vol skew
         if not d:
             d = _check_vol_skew(market, balance, spot)
             if d:
                 stats["vol_skew"] += 1
 
-        # 4. Time decay (very near expiry, exploits boring windows)
+        # 5. Time decay
         if not d:
             d = _check_time_decay(market, balance, spot)
             if d:
                 stats["time_decay"] += 1
 
-        # 5. Mean reversion (bet against crowd at coin-flip)
+        # 6. Mean reversion
         if not d:
             d = _check_mean_reversion(market, balance, spot)
             if d:
                 stats["mean_reversion"] += 1
-
-        # 6. Near-expiry momentum (weakest — proven loser, last resort)
-        if not d:
-            d = _check_near_expiry(market, balance)
-            if d:
-                stats["near_expiry"] += 1
-
-        # 7. Calibration (stub)
-        if not d:
-            d = _check_calibration(market, balance, None)
-            if d:
-                stats["calibration"] += 1
 
         if d:
             decisions.append(d)
