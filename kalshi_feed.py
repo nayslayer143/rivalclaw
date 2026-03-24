@@ -25,16 +25,23 @@ DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "riva
 PROD_API = "https://api.elections.kalshi.com/trade-api/v2"
 DEMO_API = "https://demo-api.kalshi.co/trade-api/v2"
 PAGE_LIMIT = 200
-CACHE_MAX_AGE_HOURS = 0.05  # ~3 minutes — must be fresh for 15-min contracts
+CACHE_MAX_AGE_HOURS = 0  # Always fetch fresh — we need current data for all series
 
-# Focus on fastest-resolving series
+# Focus on fastest-resolving series (expanded beyond crypto)
 FAST_SERIES = [
-    "KXDOGE15M", "KXADA15M", "KXBNB15M", "KXBCH15M",  # 15-min crypto
-    "INXI", "NASDAQ100I",                                # hourly indices
-    "KXBTC", "KXETH", "KXBTCMAXD",                      # daily crypto
+    # 15-min crypto (fastest feedback)
+    "KXDOGE15M", "KXADA15M", "KXBNB15M", "KXBCH15M",
+    # Daily crypto
+    "KXBTC", "KXETH", "KXBTCMAXD",
+    # Weather (resolves same day, real volume)
+    "KXHIGHTDC", "KXHIGHTSFO", "KXTEMPNYCH",
+    # Commodities + FX (daily)
+    "KXGOLDD", "KXSILVERD", "KXTNOTED", "KXUSDJPY",
+    # Index (daily)
+    "KXINXSPX", "KXINXNDX",
 ]
 
-# Map series prefix to CoinGecko underlying ID
+# Map series prefix to CoinGecko underlying ID (crypto only)
 SERIES_TO_UNDERLYING = {
     "KXDOGE15M": "dogecoin",
     "KXADA15M": "cardano",
@@ -43,6 +50,13 @@ SERIES_TO_UNDERLYING = {
     "KXBTC": "bitcoin",
     "KXBTCMAXD": "bitcoin",
     "KXETH": "ethereum",
+}
+
+# Map series to weather city (for weather_feed)
+SERIES_TO_WEATHER = {
+    "KXHIGHTDC": "dc",
+    "KXHIGHTSFO": "sf",
+    "KXTEMPNYCH": "nyc",
 }
 
 _warned_no_key = False

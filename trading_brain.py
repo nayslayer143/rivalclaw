@@ -65,6 +65,13 @@ SERIES_TO_UNDERLYING = {
     "KXBTC": "bitcoin", "KXBTCMAXD": "bitcoin", "KXETH": "ethereum",
 }
 
+# Weather series → city mapping (for weather_feed)
+SERIES_TO_WEATHER = {
+    "KXHIGHTDC": "dc",
+    "KXHIGHTSFO": "sf",
+    "KXTEMPNYCH": "nyc",
+}
+
 # Proven strategies get full Kelly, new ones get fractional Kelly
 PROVEN_STRATEGIES = {"arbitrage", "fair_value_directional", "time_decay"}
 
@@ -286,6 +293,28 @@ def _get_realtime_vol(underlying_id):
         return static_vol
 
 
+def _find_weather_city(market):
+    """Match a Kalshi market to a weather city."""
+    event_ticker = market.get("event_ticker", "")
+    market_id = market.get("market_id", "")
+    for series, city in SERIES_TO_WEATHER.items():
+        if series in event_ticker or series in market_id:
+            return city
+    return None
+
+
+def _get_weather_spot_and_vol(city):
+    """Get forecast high (spot equivalent) and forecast error (vol equivalent) for a city."""
+    try:
+        import weather_feed
+        forecast = weather_feed.get_city_forecast(city)
+        if forecast:
+            return forecast["high_f"], forecast["forecast_error"]
+    except Exception:
+        pass
+    return None, None
+
+
 def _check_fair_value(market, balance, spot_prices):
     if market.get("venue") != "kalshi":
         return None
@@ -293,13 +322,31 @@ def _check_fair_value(market, balance, spot_prices):
     minutes = _parse_expiry_minutes(market)
     if minutes is None or minutes <= 2 or minutes > 24 * 60:
         return None
+
+    # Determine underlying: crypto or weather?
     underlying_id = _find_underlying(market)
-    if not underlying_id:
-        return None
-    spot = spot_prices.get(underlying_id)
-    if not spot or spot <= 0:
-        return None
-    vol = _get_realtime_vol(underlying_id)
+    weather_city = _find_weather_city(market) if not underlying_id else None
+
+    if underlying_id:
+        spot = spot_prices.get(underlying_id)
+        if not spot or spot <= 0:
+            return None
+        vol = _get_realtime_vol(underlying_id)
+    elif weather_city:
+        spot, vol = _get_weather_spot_and_vol(weather_city)
+        if not spot:
+            return None
+        # Weather "vol" is forecast error in °F, but _compute_fair_value expects
+        # annualized vol as a fraction. Convert: error_F / spot_F gives a percentage.
+        # For a 2.5°F error on 55°F forecast = ~4.5% → annualize for the timeframe
+        vol_pct = vol / spot if spot > 0 else 0.05
+        # Scale to annualized: for a same-day forecast, the error is fixed
+        # Use a simplified approach: compute directly with normal CDF
+        # P(max > strike) = Φ((forecast - strike) / error)
+        # We'll handle this in the fair value computation below
+        vol = vol_pct * math.sqrt(365.25 * 24 * 60 / max(minutes, 1))
+    else:
+        return None  # Unknown underlying
 
     # Bracket contracts: P(floor <= spot <= cap)
     if strike_type == "between":
