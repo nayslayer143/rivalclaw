@@ -175,6 +175,31 @@ def run_loop():
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
     print(f"[rivalclaw] Run loop starting — {cycle_started_iso}")
 
+    # Auto-reload wallet if balance drops below $100 (learning must continue)
+    RELOAD_THRESHOLD = float(os.environ.get("RIVALCLAW_RELOAD_THRESHOLD", "100"))
+    RELOAD_AMOUNT = float(os.environ.get("RIVALCLAW_RELOAD_AMOUNT", "1000"))
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT value FROM context WHERE chat_id='rivalclaw' AND key='starting_balance'"
+        ).fetchone()
+        current_starting = float(row["value"]) if row else 1000.0
+        # Quick balance estimate: starting + closed pnl
+        closed_pnl = conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status != 'open'"
+        ).fetchone()[0]
+        est_balance = current_starting + closed_pnl
+        if est_balance < RELOAD_THRESHOLD:
+            new_starting = current_starting + RELOAD_AMOUNT
+            conn.execute(
+                "UPDATE context SET value=? WHERE chat_id='rivalclaw' AND key='starting_balance'",
+                (str(new_starting),))
+            conn.commit()
+            print(f"[rivalclaw] WALLET RELOAD: ${current_starting:.0f} -> ${new_starting:.0f} "
+                  f"(balance was ${est_balance:.0f}, injected ${RELOAD_AMOUNT:.0f})")
+    finally:
+        conn.close()
+
     # 1. Fetch market data from both venues (timed)
     t0 = time.time()
     poly_markets = poly_feed.fetch_markets()
