@@ -215,6 +215,10 @@ def run_loop():
                            (time.time() * 1000 - cycle_started_at_ms))
         return
 
+    # 1b. Classify and filter markets by resolution speed
+    import market_classifier
+    markets = market_classifier.classify_and_filter(markets)
+
     # 2. Get wallet state + spot prices for fair value
     state = wallet.get_state()
     spot_prices = spot_feed.get_spot_prices()

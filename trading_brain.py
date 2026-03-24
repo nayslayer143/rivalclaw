@@ -37,6 +37,7 @@ STALE_THRESHOLD_MINUTES = float(os.environ.get("RIVALCLAW_STALE_MINUTES", "30"))
 
 MIN_FAIR_VALUE_EDGE = float(os.environ.get("RIVALCLAW_MIN_FV_EDGE", "0.04"))
 KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
+VELOCITY_PREFERENCE = float(os.environ.get("RIVALCLAW_VELOCITY_PREFERENCE", "1.5"))
 
 NEAR_EXPIRY_HOURS = float(os.environ.get("RIVALCLAW_NEAR_EXPIRY_HOURS", "48"))
 MIN_MOMENTUM_PRICE = float(os.environ.get("RIVALCLAW_MIN_MOMENTUM_PRICE", "0.78"))
@@ -1167,6 +1168,11 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["mean_reversion"] += 1
 
         if d:
+            # Attach market priority score for velocity-weighted ranking
+            if d.metadata is None:
+                d.metadata = {}
+            d.metadata["priority_score"] = market.get("priority_score", 0)
+            d.metadata["speed_category"] = market.get("speed_category", "unknown")
             decisions.append(d)
             if evt:
                 seen_events.add(evt)
@@ -1185,4 +1191,9 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     parts = " ".join(f"{k}={v}" for k, v in sorted(stats.items()) if k != "integrity")
     print(f"[rivalclaw/brain] Signals: {parts} (total={len(hedged)})")
 
-    return sorted(hedged, key=lambda d: d.confidence, reverse=True)
+    # Sort by confidence × velocity preference — faster markets rank higher
+    def _rank(d):
+        priority = (d.metadata or {}).get("priority_score", 0)
+        velocity_boost = 1.0 + (priority / 15.0) * (VELOCITY_PREFERENCE - 1.0)
+        return d.confidence * velocity_boost
+    return sorted(hedged, key=_rank, reverse=True)
