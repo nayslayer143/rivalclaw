@@ -632,6 +632,128 @@ def _check_calibration(market, balance, calibration_data):
 
 
 # ---------------------------------------------------------------------------
+# Hedge engine — turns naked bets into defined-risk spreads
+# ---------------------------------------------------------------------------
+
+HEDGE_RATIO = float(os.environ.get("RIVALCLAW_HEDGE_RATIO", "0.30"))  # Hedge = 30% of primary size
+HEDGE_STRIKE_OFFSET = float(os.environ.get("RIVALCLAW_HEDGE_OFFSET", "0.02"))  # 2% OTM for hedge
+
+def _find_hedge(primary: TradeDecision, markets_by_event: dict[str, list[dict]],
+                balance: float) -> TradeDecision | None:
+    """
+    Find a hedging contract to cap downside on a primary trade.
+
+    For Kalshi threshold contracts:
+      - If primary is YES on "BTC > $71,000": hedge with NO on "BTC > $72,000"
+        (if BTC drops below $71K we lose primary, but hedge was cheap)
+      - If primary is NO on "BTC > $71,000": hedge with YES on "BTC > $70,000"
+        (if BTC rises above $71K we lose primary, but hedge limits damage)
+
+    For Polymarket / non-threshold: no hedge available (different market structure).
+    """
+    meta = primary.metadata or {}
+    if meta.get("venue") != "kalshi":
+        return None
+
+    # Find the event group for this market
+    evt = None
+    for event_ticker, group in markets_by_event.items():
+        for m in group:
+            if m.get("market_id") == primary.market_id:
+                evt = event_ticker
+                break
+        if evt:
+            break
+    if not evt:
+        return None
+
+    group = markets_by_event.get(evt, [])
+    if len(group) < 2:
+        return None
+
+    primary_strike = meta.get("strike") or 0
+    if primary_strike <= 0:
+        return None
+
+    # Find hedge contract: same event, different strike, opposite direction
+    best_hedge = None
+    best_hedge_cost = 1.0
+
+    for m in group:
+        if m.get("market_id") == primary.market_id:
+            continue
+        strike_type = m.get("strike_type", "")
+        if strike_type == "between":
+            continue  # Don't hedge with brackets
+
+        h_strike = m.get("floor_strike") or m.get("cap_strike") or 0
+        if h_strike <= 0:
+            continue
+
+        yes_price = m.get("yes_price", 0) or 0
+        if yes_price <= 0.02 or yes_price >= 0.98:
+            continue
+
+        if primary.direction == "YES":
+            # Primary is bullish → hedge is a cheaper bullish contract further OTM
+            # Buy YES on a HIGHER strike (protective put equivalent)
+            # If underlying drops, this also loses, but it was cheap
+            # Actually, better: buy NO on a slightly higher strike
+            # If underlying drops below primary strike, NO on higher strike also wins
+            # NO: hedge with NO on a lower strike
+            # Best hedge for YES on ">71K": buy YES on ">70K" (insurance floor)
+            if h_strike < primary_strike and (primary_strike - h_strike) / primary_strike < 0.05:
+                # Strike is 1-5% below primary — good insurance
+                cost = yes_price + _kalshi_fee(yes_price)
+                if cost < best_hedge_cost:
+                    best_hedge = m
+                    best_hedge_cost = cost
+        else:
+            # Primary is bearish (NO) → hedge with YES on the same or nearby strike
+            # Buy YES on a higher strike as insurance
+            if h_strike > primary_strike and (h_strike - primary_strike) / primary_strike < 0.05:
+                cost = yes_price + _kalshi_fee(yes_price)
+                if cost < best_hedge_cost:
+                    best_hedge = m
+                    best_hedge_cost = cost
+
+    if best_hedge is None:
+        return None
+
+    # Size the hedge at HEDGE_RATIO of primary
+    hedge_amount = primary.amount_usd * HEDGE_RATIO
+    if hedge_amount < 5:  # Minimum $5 hedge
+        return None
+
+    # Hedge direction: for YES primary, buy YES on lower strike (insurance)
+    # For NO primary, buy YES on higher strike (insurance)
+    hedge_price = best_hedge.get("yes_price", 0) or 0
+    if hedge_price <= 0.02 or hedge_price >= 0.98:
+        return None
+
+    direction = "YES"  # Hedges are always YES on the insurance strike
+    entry_price = hedge_price
+    hedge_strike = best_hedge.get("floor_strike") or best_hedge.get("cap_strike") or 0
+
+    return TradeDecision(
+        market_id=best_hedge["market_id"],
+        question=best_hedge.get("question", ""),
+        direction=direction,
+        confidence=0.50,  # Low confidence — this is insurance, not a bet
+        reasoning=(f"Hedge: protects {primary.market_id[:25]} {primary.direction} "
+                   f"strike=${primary_strike:,.0f} → ins_strike=${hedge_strike:,.0f} "
+                   f"cost=${hedge_amount:.0f} ({HEDGE_RATIO:.0%} of primary)"),
+        strategy="hedge",
+        amount_usd=hedge_amount,
+        entry_price=entry_price,
+        shares=hedge_amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": 0, "venue": "kalshi", "hedge_for": primary.market_id,
+                  "primary_strike": primary_strike, "hedge_strike": hedge_strike},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -639,11 +761,12 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             spot_prices: dict | None = None) -> list[TradeDecision]:
     """
     Run all 8 strategies. One signal per event_ticker max (prevent bracket spam).
+    Pairs primary trades with hedge legs for defined-risk spreads.
     """
     balance = wallet.get("balance", 1000.0)
     spot = spot_prices or {}
     decisions = []
-    seen_events = set()  # ONE trade per event — prevents bracket spam
+    seen_events = set()
     stats = defaultdict(int)
 
     # Group markets by event_ticker for cross-strike arb
@@ -722,9 +845,18 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             if evt:
                 seen_events.add(evt)
 
+    # Hedge engine: pair primary Kalshi trades with hedge legs
+    hedged = []
+    for d in decisions:
+        hedged.append(d)
+        hedge = _find_hedge(d, event_groups, balance)
+        if hedge:
+            hedged.append(hedge)
+            stats["hedge"] += 1
+
     if stats["integrity"]:
         print(f"[rivalclaw/brain] Integrity rejected: {stats['integrity']}")
     parts = " ".join(f"{k}={v}" for k, v in sorted(stats.items()) if k != "integrity")
-    print(f"[rivalclaw/brain] Signals: {parts} (total={len(decisions)})")
+    print(f"[rivalclaw/brain] Signals: {parts} (total={len(hedged)})")
 
-    return sorted(decisions, key=lambda d: d.confidence, reverse=True)
+    return sorted(hedged, key=lambda d: d.confidence, reverse=True)
