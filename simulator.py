@@ -239,7 +239,24 @@ def run_loop():
     decisions = brain.analyze(markets, state, spot_prices=spot_prices)
     analyze_ms = (time.time() - t0) * 1000
     opportunities_detected = len(decisions)
-    print(f"[rivalclaw] Brain returned {opportunities_detected} signals")
+
+    # 3b. Risk engine: regime detection + strategy tournament + position limits
+    import risk_engine
+    regime = risk_engine.detect_regime()
+    scores = risk_engine.get_strategy_scores()
+    adjusted = []
+    blocked = 0
+    for d in decisions:
+        result = risk_engine.adjust_decision(d, state["balance"], regime, scores)
+        if result:
+            adjusted.append(result)
+        else:
+            blocked += 1
+    decisions = adjusted
+    regime_str = regime.get("regime", "?")
+    score_str = " ".join(f"{k}={v:.1f}" for k, v in sorted(scores.items())[:4])
+    print(f"[rivalclaw] Brain={opportunities_detected} Risk={len(decisions)} blocked={blocked} "
+          f"regime={regime_str} scores=[{score_str}]")
 
     # 4. Execute trades (timed)
     t0 = time.time()
