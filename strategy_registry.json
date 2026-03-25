@@ -1,0 +1,111 @@
+{
+  "strategies": [
+    {
+      "id": "arbitrage_v1.0",
+      "family": "arbitrage",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "min_edge": 0.005,
+        "fee_rate": 0.02,
+        "max_position_pct": 0.1
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 cross-outcome arb, both venues"
+    },
+    {
+      "id": "fair_value_directional_v1.0",
+      "family": "fair_value_directional",
+      "version": "1.0",
+      "status": "degraded",
+      "params": {
+        "min_fv_edge": 0.04,
+        "kalshi_fee": 0.07,
+        "bucket_enabled": true
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 proven 50% WR, 2.7x ratio"
+    },
+    {
+      "id": "spot_momentum_v1.0",
+      "family": "spot_momentum",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "lookback_periods": 10,
+        "min_trend_strength": 0.02
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 ride crypto trends into lagging contracts"
+    },
+    {
+      "id": "cross_strike_arb_v1.0",
+      "family": "cross_strike_arb",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "min_deviation": 0.03
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 bracket sum deviation from 1.0"
+    },
+    {
+      "id": "bracket_cone_v1.0",
+      "family": "bracket_cone",
+      "version": "1.0",
+      "status": "production",
+      "params": {},
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 probability cone bracket pricing"
+    },
+    {
+      "id": "mean_reversion_v1.0",
+      "family": "mean_reversion",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "min_reversion_edge": 0.06
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 bet against crowd near 0.50, 15-min crypto"
+    },
+    {
+      "id": "time_decay_v1.0",
+      "family": "time_decay",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "min_decay_edge": 0.03
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 proven 5.1x ratio, sell overpriced near-expiry"
+    },
+    {
+      "id": "vol_skew_v1.0",
+      "family": "vol_skew",
+      "version": "1.0",
+      "status": "production",
+      "params": {
+        "min_vol_skew_edge": 0.05
+      },
+      "created_at": "2026-03-25",
+      "promoted_at": "2026-03-25",
+      "baseline_metrics": null,
+      "notes": "initial production version \u2014 buy OTM when realized vol > implied vol"
+    }
+  ]
+}
