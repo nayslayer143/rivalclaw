@@ -1091,7 +1091,8 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     spot = spot_prices or {}
     spot_history = _load_spot_history()
     decisions = []
-    seen_events = set()
+    event_trade_count = defaultdict(int)  # Allow up to 2 trades per event
+    MAX_TRADES_PER_EVENT = int(os.environ.get("RIVALCLAW_MAX_PER_EVENT", "2"))
     stats = defaultdict(int)
 
     # Group markets by event_ticker for cross-strike arb
@@ -1106,18 +1107,8 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         d = _check_cross_strike_arb(group, balance)
         if d:
             decisions.append(d)
-            seen_events.add(evt)
+            event_trade_count[evt] += 1
             stats["cross_strike_arb"] += 1
-
-    # Bracket cone (runs on event groups — buys 2-3 adjacent brackets near spot)
-    for evt, group in event_groups.items():
-        if evt in seen_events:
-            continue
-        cone = _check_bracket_cone(group, balance, spot)
-        if cone:
-            decisions.extend(cone)
-            seen_events.add(evt)
-            stats["bracket_cone"] += len(cone)
 
     # Per-market strategies
     for market in markets:
@@ -1127,7 +1118,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             continue
 
         evt = market.get("event_ticker", "")
-        if evt and evt in seen_events:
+        if evt and event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
             continue
 
         d = None
@@ -1175,7 +1166,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             d.metadata["speed_category"] = market.get("speed_category", "unknown")
             decisions.append(d)
             if evt:
-                seen_events.add(evt)
+                event_trade_count[evt] += 1
 
     # Hedge engine: pair primary Kalshi trades with hedge legs
     hedged = []

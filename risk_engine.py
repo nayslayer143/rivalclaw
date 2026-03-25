@@ -256,12 +256,12 @@ def adjust_decision(decision, balance: float, regime: dict,
         elif decision.strategy == "spot_momentum":
             regime_mult = 0.5
 
-    # Apply multipliers
+    # Apply multipliers but NEVER exceed position cap
     final_mult = score * regime_mult
-    decision.amount_usd = decision.amount_usd * final_mult
-    decision.shares = decision.shares * final_mult
+    max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.04")) * 0.95  # 5% headroom for balance drift
+    decision.amount_usd = min(decision.amount_usd * final_mult, max_position)
+    decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
-    # Don't trade if adjusted amount is too small
     if decision.amount_usd < 3:
         return None
 

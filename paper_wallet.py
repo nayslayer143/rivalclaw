@@ -171,6 +171,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
     state = get_state()
     cap = state["balance"] * MAX_POSITION_PCT
     if decision.amount_usd > cap:
+        print(f"[rivalclaw/wallet] REJECT {decision.market_id[:30]}: amount=${decision.amount_usd:.1f} > cap=${cap:.1f} (bal=${state['balance']:.1f})")
         return None
 
     entry_price = decision.entry_price
