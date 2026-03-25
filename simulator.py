@@ -170,10 +170,12 @@ def run_loop():
     import paper_wallet as wallet
     import trading_brain as brain
     import graduation as grad
+    import event_logger as elog
 
     cycle_started_at_ms = time.time() * 1000
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
-    print(f"[rivalclaw] Run loop starting — {cycle_started_iso}")
+    run_id = elog.start_run()
+    print(f"[rivalclaw] Run loop starting — {cycle_started_iso} run={run_id}")
 
     # Auto-reload wallet if balance drops below $100 (learning must continue)
     RELOAD_THRESHOLD = float(os.environ.get("RIVALCLAW_RELOAD_THRESHOLD", "100"))
@@ -213,7 +215,12 @@ def run_loop():
         print("[rivalclaw] No markets available. Skipping trades.")
         _log_cycle_metrics(cycle_started_iso, 0, 0, 0, 0, 0, fetch_ms, 0, 0,
                            (time.time() * 1000 - cycle_started_at_ms))
+        elog.end_run()
         return
+
+    # 1a-log. Emit market snapshots for Strategy Lab
+    for m in markets:
+        elog.market_snapshot(m)
 
     # 1b. Classify and filter markets by resolution speed
     import market_classifier
@@ -256,11 +263,20 @@ def run_loop():
             adjusted.append(result)
         else:
             blocked += 1
+            elog.decision(
+                action="abstain", strategy=d.strategy, market_id=d.market_id,
+                reason="exposure_cap", confidence=d.confidence,
+                size_proposed=d.amount_usd,
+            )
     decisions = adjusted
     regime_str = regime.get("regime", "?")
     score_str = " ".join(f"{k}={v:.1f}" for k, v in sorted(scores.items())[:4])
     print(f"[rivalclaw] Brain={opportunities_detected} Risk={len(decisions)} blocked={blocked} "
           f"regime={regime_str} scores=[{score_str}]")
+
+    # Emit regime classification for Strategy Lab
+    elog.regime(label=regime_str, confidence=regime.get("confidence", 0.5),
+                features={"scores": scores, "blocked": blocked})
 
     # 4. Execute trades (timed)
     t0 = time.time()
@@ -279,7 +295,23 @@ def run_loop():
                   f"on '{d.question[:50]}' [{d.strategy}]")
         else:
             print(f"[rivalclaw] Rejected: {d.market_id} (cap or kelly)")
+            elog.decision(
+                action="abstain", strategy=d.strategy, market_id=d.market_id,
+                reason="position_limit_reached", confidence=d.confidence,
+                size_proposed=d.amount_usd,
+            )
     wallet_ms = (time.time() - t0) * 1000
+
+    # 4b. Shadow mode: run candidate strategies alongside production
+    try:
+        from strategy_lab.governor import get_shadow_candidates
+        shadow_candidates = get_shadow_candidates()
+        if shadow_candidates:
+            _run_shadow(shadow_candidates, markets, state, spot_prices, elog)
+    except ImportError:
+        pass  # Governor not yet built — skip shadow
+    except Exception as exc:
+        print(f"[rivalclaw] Shadow mode error: {exc}")
 
     # 5. Check stops (always runs, both venues)
     try:
@@ -306,21 +338,51 @@ def run_loop():
 
     print(f"[rivalclaw] Run complete — fetch={fetch_ms:.0f}ms analyze={analyze_ms:.0f}ms "
           f"wallet={wallet_ms:.0f}ms total={total_cycle_ms:.0f}ms")
+    elog.end_run()
 
-    # 8. Real-time Telegram alerts when trades execute
-    if trades_executed > 0 or closed:
-        try:
-            import notify
-            closed_wins = [c for c in closed if (c.get("pnl") or 0) > 0]
-            closed_losses = [c for c in closed if (c.get("pnl") or 0) <= 0]
-            closed_pnl = sum(c.get("pnl") or 0 for c in closed)
-            msg = (f"⚡ RIVALCLAW {cycle_started_iso[11:19]}\n"
-                   f"Traded: {trades_executed} new | Closed: {len(closed)} "
-                   f"(W:{len(closed_wins)} L:{len(closed_losses)} ${closed_pnl:+,.0f})\n"
-                   f"Balance: ${state['balance']:,.0f} | Open: {state['open_positions']+trades_executed}")
-            notify.send_telegram(msg, parse_mode="")
-        except Exception:
-            pass  # Never crash the loop for notifications
+    # 8. Per-cycle trade alerts REMOVED — too noisy for Telegram
+    # Keeping: hourly reports + 15-min pings only
+
+
+def _run_shadow(candidates, markets, state, spot_prices, elog):
+    """Run shadow candidates: same market data, simulated decisions, no real wallet impact."""
+    import trading_brain as brain
+
+    for candidate in candidates:
+        cid = candidate.get("id", "?")
+        family = candidate.get("family", "")
+        params = candidate.get("params", {})
+        shadow_balance = state.get("balance", 1000.0)  # Mirror production balance
+        shadow_trades = 0
+
+        # Run brain analysis with same data
+        decisions = brain.analyze(markets, state, spot_prices=spot_prices)
+
+        # Filter to only this strategy family's decisions
+        for d in decisions:
+            if d.strategy != family:
+                continue
+            shadow_trades += 1
+            # Log as shadow trade
+            elog.signal(
+                strategy=d.strategy, market_id=d.market_id, direction=d.direction,
+                confidence=d.confidence, edge_estimate=(d.metadata or {}).get("edge", 0),
+                strategy_version=cid,
+            )
+            elog.decision(
+                action="enter", strategy=d.strategy, market_id=d.market_id,
+                confidence=d.confidence, size_proposed=d.amount_usd, shadow=True,
+                strategy_version=cid,
+            )
+            elog.trade(
+                trade_id=f"shadow-{cid}-{d.market_id[:8]}",
+                market_id=d.market_id, strategy=d.strategy,
+                direction=d.direction, size=d.amount_usd, price=d.entry_price,
+                shadow=True, strategy_version=cid,
+            )
+
+        if shadow_trades > 0:
+            print(f"[rivalclaw/shadow] {cid}: {shadow_trades} shadow trades logged")
 
 
 def _log_cycle_metrics(started_at, markets, detected, qualified, executed,
