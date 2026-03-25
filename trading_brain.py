@@ -150,15 +150,23 @@ def _kelly_size(confidence: float, entry_price: float, balance: float,
         return None
     return min(kelly * fraction * balance, MAX_POSITION_PCT * balance)
 
+MAX_LOSS_PCT = float(os.environ.get("RIVALCLAW_MAX_LOSS_PCT", "0.03"))  # Max 3% balance loss per trade
+
 def _size_for_strategy(strategy: str, confidence: float, entry_price: float,
                        balance: float, direction: str = "YES") -> float | None:
     frac = KELLY_FRACTION_PROVEN if strategy in PROVEN_STRATEGIES else KELLY_FRACTION_NEW
-    # Data-driven: NO bets outperform YES by 3.5x. Boost NO sizing.
     if direction == "NO":
         frac *= NO_DIRECTION_BOOST
-    # Time-of-day weight: afternoon/evening perform best
     frac *= _time_of_day_weight()
-    return _kelly_size(confidence, entry_price, balance, frac)
+    amount = _kelly_size(confidence, entry_price, balance, frac)
+    if amount is None:
+        return None
+    # Wipeout protection: if this position goes to $0, max loss = amount.
+    # Cap so max loss never exceeds MAX_LOSS_PCT of balance.
+    max_loss = balance * MAX_LOSS_PCT
+    if amount > max_loss:
+        amount = max_loss
+    return amount
 
 def _validate_market(market: dict) -> str | None:
     if not market.get("market_id") or not market.get("question"):
@@ -1302,6 +1310,236 @@ def _check_liquidity_fade(market, balance, spot_prices):
 
 
 # ---------------------------------------------------------------------------
+# Strategy 14: Volume-confirmed trades (only trade brackets with real volume)
+# ---------------------------------------------------------------------------
+
+MIN_VOLUME_THRESHOLD = float(os.environ.get("RIVALCLAW_MIN_VOLUME", "50"))
+
+def _check_volume_confirmed(market, balance, spot_prices):
+    """
+    Fair value on brackets that have REAL volume. High-volume brackets
+    have better price discovery = less risk of total wipeout.
+    Low-volume brackets are where we get killed (-$546 on illiquid 15-min).
+    """
+    if market.get("venue") != "kalshi" or market.get("strike_type") != "between":
+        return None
+    volume = market.get("volume", 0) or market.get("volume_24h", 0) or 0
+    if volume < MIN_VOLUME_THRESHOLD:
+        return None
+
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2:
+        return None
+
+    vol = _get_realtime_vol(underlying_id)
+    floor_s = market.get("floor_strike")
+    cap_s = market.get("cap_strike")
+    if not floor_s or not cap_s:
+        return None
+    fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    if fair is None:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    no_price = 1.0 - yes_price
+    fee = _kalshi_fee(yes_price)
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+
+    # Only NO bets in the sweet spot — volume-confirmed + NO bias
+    thresh = MIN_FAIR_VALUE_EDGE * _bucket_multiplier(no_price)
+    if edge_no > thresh and 0.10 <= no_price <= 0.35:
+        direction, entry_price, edge = "NO", no_price, edge_no
+        confidence = min(1.0 - fair, 0.90)
+    else:
+        return None
+
+    amount = _size_for_strategy("volume_confirmed", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"VolConf: vol={volume:.0f} fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f} [{underlying_id}]",
+        strategy="volume_confirmed", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "volume": volume, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 15: Wipeout reversal (after 15-min contract wipes, next one reverts)
+# ---------------------------------------------------------------------------
+
+def _check_wipeout_reversal(market, balance, spot_prices):
+    """
+    After a 15-min crypto contract goes to 0 (wipeout), the NEXT window
+    often overreacts in the opposite direction. Bet on mean reversion
+    across consecutive 15-min windows.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    mid = market.get("market_id", "")
+    if "15M" not in mid:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2 or minutes > 15:
+        return None
+
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+
+    strike = market.get("floor_strike")
+    if not strike or strike <= 0:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.05 or yes_price >= 0.95:
+        return None
+
+    # Check if spot is very close to strike (the "coin flip" zone)
+    # In this zone, the market tends to overreact to the last window's outcome
+    pct_from_strike = abs(spot - strike) / strike
+    if pct_from_strike > 0.005:  # Only when spot is within 0.5% of strike
+        return None
+
+    # Bet toward 0.50 — if market is pricing away from 0.50, bet the other way
+    fair = 0.50  # Coin flip when spot ≈ strike
+    fee = _kalshi_fee(yes_price)
+
+    if yes_price > 0.55:
+        direction, entry_price = "NO", 1.0 - yes_price
+        edge = (yes_price - fair) - fee
+        confidence = min(0.55, 0.85)
+    elif yes_price < 0.45:
+        direction, entry_price = "YES", yes_price
+        edge = (fair - yes_price) - fee
+        confidence = min(0.55, 0.85)
+    else:
+        return None
+
+    if edge <= 0.01:
+        return None
+
+    amount = _size_for_strategy("wipeout_reversal", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"WipeoutRev: spot≈strike ({pct_from_strike:.3%}) yes={yes_price:.3f} fair=0.50 edge={edge:.3f} [{underlying_id}]",
+        strategy="wipeout_reversal", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "pct_from_strike": pct_from_strike, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 16: Multi-timeframe consensus (15-min + daily agree = high confidence)
+# ---------------------------------------------------------------------------
+
+def _check_multi_timeframe(market, balance, spot_prices, all_decisions: list):
+    """
+    If a 15-min contract AND a daily contract on the same underlying
+    both signal the same direction, trade with boosted confidence.
+    Consensus across timeframes = stronger signal.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+
+    # Check if we already have a decision on this underlying from a different timeframe
+    my_timeframe = "fast" if "15M" in market.get("market_id", "") else "slow"
+    opposite_tf = "slow" if my_timeframe == "fast" else "fast"
+
+    matching_direction = None
+    for d in all_decisions:
+        d_underlying = (d.metadata or {}).get("underlying") or ""
+        d_mid = d.market_id or ""
+        # Check if same underlying, different timeframe
+        if underlying_id in d_mid or underlying_id.replace("-", "") in d_mid.lower():
+            d_tf = "fast" if "15M" in d_mid else "slow"
+            if d_tf == opposite_tf:
+                matching_direction = d.direction
+                break
+
+    if not matching_direction:
+        return None
+
+    # We have consensus — compute fair value and trade with boosted confidence
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2:
+        return None
+
+    vol = _get_realtime_vol(underlying_id)
+    strike_type = market.get("strike_type", "")
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    if strike_type == "between":
+        floor_s, cap_s = market.get("floor_strike"), market.get("cap_strike")
+        if not floor_s or not cap_s:
+            return None
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    else:
+        strike = market.get("floor_strike") or market.get("cap_strike")
+        if not strike:
+            return None
+        fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
+
+    if fair is None:
+        return None
+
+    no_price = 1.0 - yes_price
+    fee = _kalshi_fee(yes_price)
+    edge_yes = fair - (yes_price + fee)
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+
+    # Only trade in the consensus direction with lower threshold (0.5x)
+    if matching_direction == "NO" and edge_no > MIN_FAIR_VALUE_EDGE * 0.5:
+        direction, entry_price, edge = "NO", no_price, edge_no
+        confidence = min(1.0 - fair + 0.05, 0.93)  # Boosted by consensus
+    elif matching_direction == "YES" and edge_yes > MIN_FAIR_VALUE_EDGE * 0.5:
+        direction, entry_price, edge = "YES", yes_price, edge_yes
+        confidence = min(fair + 0.05, 0.93)
+    else:
+        return None
+
+    amount = _size_for_strategy("multi_timeframe", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"MultiTF: {my_timeframe}+{opposite_tf} consensus={matching_direction} edge={edge:.3f}",
+        strategy="multi_timeframe", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "consensus": matching_direction, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Hedge engine — turns naked bets into defined-risk spreads
 # ---------------------------------------------------------------------------
 
@@ -1502,10 +1740,18 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         reason = _validate_market(market)
         if reason:
             stats["integrity"] += 1
+            elog.decision(
+                action="abstain", strategy="none", market_id=market.get("market_id", ""),
+                reason="policy_block", confidence=0, threshold=0,
+            )
             continue
 
         evt = market.get("event_ticker", "")
         if evt and event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+            elog.decision(
+                action="abstain", strategy="none", market_id=market.get("market_id", ""),
+                reason="position_limit_reached",
+            )
             continue
 
         d = None
@@ -1576,6 +1822,24 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             if d:
                 stats["liquidity_fade"] += 1
 
+        # 12. Volume-confirmed (high-volume brackets only)
+        if not d:
+            d = _check_volume_confirmed(market, balance, spot)
+            if d:
+                stats["volume_confirmed"] += 1
+
+        # 13. Wipeout reversal (15-min mean reversion)
+        if not d:
+            d = _check_wipeout_reversal(market, balance, spot)
+            if d:
+                stats["wipeout_reversal"] += 1
+
+        # 14. Multi-timeframe consensus
+        if not d:
+            d = _check_multi_timeframe(market, balance, spot, decisions)
+            if d:
+                stats["multi_timeframe"] += 1
+
         if d:
             # Attach market priority score for velocity-weighted ranking
             if d.metadata is None:
@@ -1596,10 +1860,10 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 confidence=d.confidence, size_proposed=d.amount_usd,
             )
         else:
-            # No strategy fired — emit abstain
+            # No strategy fired — emit classified abstain
             elog.decision(
                 action="abstain", strategy="none", market_id=market.get("market_id", ""),
-                reason="no strategy triggered",
+                reason="confidence_below_threshold",
             )
 
     # Hedge engine: pair primary Kalshi trades with hedge legs
