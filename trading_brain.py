@@ -946,20 +946,359 @@ def _solve_implied_vol(spot, strike, minutes, target_price, strike_type, tol=0.0
 
 
 # ---------------------------------------------------------------------------
-# Strategy 8: Calibration (stub — activates with historical data)
+# Strategy 8: Closing convergence (price should approach 0 or 1 near expiry)
 # ---------------------------------------------------------------------------
 
-def _check_calibration(market, balance, calibration_data):
+def _check_closing_convergence(market, balance):
     """
-    Trade based on historical price-outcome calibration curve.
-    Requires enough resolution data to build calibration buckets.
-    Stub — returns None until calibration_data is populated.
+    Near expiry (<2h), prices should converge toward 0 or 1.
+    If YES is 0.85 with 1h left, it should be heading toward 1.0.
+    Buy the dominant side — momentum toward resolution.
     """
-    if not calibration_data:
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2 or minutes > 120:
         return None
-    # Future: bucket markets by pre-resolution price, compare to actual resolution rate
-    # If markets priced at 0.80 resolve YES 92% of the time → buy YES when price is 0.80
-    return None
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.05 or yes_price >= 0.95:
+        return None
+    venue = market.get("venue", "polymarket")
+    fee = _venue_fee(yes_price, venue)
+    hours = minutes / 60.0
+    # Convergence strength: closer to expiry + more extreme price = stronger
+    if yes_price >= 0.75:
+        direction, entry_price = "YES", yes_price
+        # Expected convergence: price should approach 1.0
+        convergence_target = 1.0 - (1.0 - yes_price) * (hours / 2.0)  # Linear decay
+        edge = convergence_target - (yes_price + fee)
+        confidence = min(convergence_target, 0.92)
+    elif yes_price <= 0.25:
+        direction, entry_price = "NO", 1.0 - yes_price
+        convergence_target = 1.0 - yes_price * (hours / 2.0)
+        edge = convergence_target - (entry_price + _venue_fee(entry_price, venue))
+        confidence = min(convergence_target, 0.92)
+    else:
+        return None
+    if edge <= 0.01:
+        return None
+    amount = _size_for_strategy("closing_convergence", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"Converge: {hours:.1f}h left yes={yes_price:.3f} target={convergence_target:.3f} edge={edge:.3f} [{venue}]",
+        strategy="closing_convergence", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "hours_to_expiry": hours, "venue": venue},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 9: Bracket neighbor mispricing
+# ---------------------------------------------------------------------------
+
+def _check_bracket_neighbor(event_markets: list[dict], balance: float,
+                            spot_prices: dict) -> list[TradeDecision]:
+    """
+    Adjacent brackets should have smoothly transitioning prices.
+    When one bracket is cheap relative to its neighbors, buy it.
+    """
+    brackets = [m for m in event_markets if m.get("strike_type") == "between"
+                and m.get("floor_strike") and m.get("yes_price")]
+    if len(brackets) < 5:
+        return []
+    brackets.sort(key=lambda m: m.get("floor_strike", 0))
+
+    decisions = []
+    for i in range(1, len(brackets) - 1):
+        prev_yes = brackets[i-1].get("yes_price", 0) or 0
+        curr_yes = brackets[i].get("yes_price", 0) or 0
+        next_yes = brackets[i+1].get("yes_price", 0) or 0
+        if prev_yes <= 0 or curr_yes <= 0 or next_yes <= 0:
+            continue
+        # Expected price: average of neighbors
+        expected = (prev_yes + next_yes) / 2
+        discount = expected - curr_yes
+        fee = _kalshi_fee(curr_yes)
+        if discount > fee + 0.02 and 0.03 <= curr_yes <= 0.40:
+            # This bracket is cheap relative to neighbors → buy YES
+            confidence = min(expected, 0.85)
+            amount = _size_for_strategy("bracket_neighbor", confidence, curr_yes, balance, "YES")
+            if amount:
+                m = brackets[i]
+                decisions.append(TradeDecision(
+                    market_id=m["market_id"], question=m.get("question", ""),
+                    direction="YES", confidence=confidence,
+                    reasoning=f"Neighbor: prev={prev_yes:.3f} curr={curr_yes:.3f} next={next_yes:.3f} expected={expected:.3f} discount={discount:.3f}",
+                    strategy="bracket_neighbor", amount_usd=amount, entry_price=curr_yes,
+                    shares=amount / curr_yes if curr_yes > 0 else 0,
+                    decision_generated_at_ms=time.time() * 1000,
+                    metadata={"edge": discount - fee, "venue": "kalshi"},
+                ))
+            if len(decisions) >= 2:
+                break
+    return decisions
+
+
+# ---------------------------------------------------------------------------
+# Strategy 10: Expiry acceleration (amplified fair_value in last 5 min)
+# ---------------------------------------------------------------------------
+
+def _check_expiry_acceleration(market, balance, spot_prices):
+    """
+    In the last 5 minutes, our fair value model is extremely accurate
+    (low vol = sharp distribution). Trade more aggressively with higher confidence.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 0.5 or minutes > 5:
+        return None
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+    vol = _get_realtime_vol(underlying_id)
+    strike_type = market.get("strike_type", "")
+
+    if strike_type == "between":
+        floor_s = market.get("floor_strike")
+        cap_s = market.get("cap_strike")
+        if not floor_s or not cap_s:
+            return None
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    elif strike_type in ("greater_or_equal", "greater"):
+        strike = market.get("floor_strike")
+        if not strike:
+            return None
+        fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
+    else:
+        return None
+
+    if fair is None:
+        return None
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.01 or yes_price >= 0.99:
+        return None
+
+    fee = _kalshi_fee(yes_price)
+    no_price = 1.0 - yes_price
+    edge_yes = fair - (yes_price + fee)
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+
+    # Lower threshold for acceleration — we're very confident near expiry
+    min_edge = 0.008
+    if edge_yes > min_edge and edge_yes >= edge_no:
+        direction, entry_price, confidence, edge = "YES", yes_price, min(fair, 0.93), edge_yes
+    elif edge_no > min_edge:
+        direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.93), edge_no
+    else:
+        return None
+
+    amount = _size_for_strategy("expiry_acceleration", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"ExpiryAccel: {minutes:.1f}m left fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.4f}",
+        strategy="expiry_acceleration", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "minutes_to_expiry": minutes, "fair_value": fair, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 11: Correlation echo (BTC signal → ETH trade, vice versa)
+# ---------------------------------------------------------------------------
+
+def _check_correlation_echo(market, balance, spot_prices, active_signals: set):
+    """
+    BTC and ETH are ~85% correlated. If we just found a strong signal on BTC,
+    echo a weaker version to the equivalent ETH bracket (and vice versa).
+    """
+    if market.get("venue") != "kalshi" or market.get("strike_type") != "between":
+        return None
+    mid = market.get("market_id", "")
+    underlying = _find_underlying(market)
+    if not underlying:
+        return None
+
+    # Check if the correlated asset has a recent signal
+    correlated = "ethereum" if underlying == "bitcoin" else ("bitcoin" if underlying == "ethereum" else None)
+    if not correlated:
+        return None
+
+    # Look for active signals on the correlated asset
+    has_correlated_signal = any(correlated in sig for sig in active_signals)
+    if not has_correlated_signal:
+        return None
+
+    spot = spot_prices.get(underlying)
+    if not spot or spot <= 0:
+        return None
+
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2:
+        return None
+
+    vol = _get_realtime_vol(underlying)
+    floor_s = market.get("floor_strike")
+    cap_s = market.get("cap_strike")
+    if not floor_s or not cap_s:
+        return None
+
+    fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    if fair is None:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    no_price = 1.0 - yes_price
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+    # Echo trades are weaker — need higher edge threshold
+    if edge_no > 0.03:
+        direction, entry_price, edge = "NO", no_price, edge_no
+        confidence = min(1.0 - fair, 0.85)
+    else:
+        return None
+
+    amount = _size_for_strategy("correlation_echo", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"CorrEcho: {correlated} signal → {underlying} echo, fair={fair:.4f} edge={edge:.3f}",
+        strategy="correlation_echo", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "correlated_asset": correlated, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 12: Polymarket convergence (near-resolution markets)
+# ---------------------------------------------------------------------------
+
+def _check_polymarket_convergence(market, balance):
+    """
+    Polymarket markets with extreme prices (>0.85 or <0.15) near resolution
+    should converge further. Buy the dominant side.
+    """
+    if market.get("venue") != "polymarket":
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 0 or minutes > 72 * 60:
+        return None
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.05 or yes_price >= 0.95:
+        return None
+    fee = _fee(yes_price)
+    hours = minutes / 60.0
+
+    if yes_price >= 0.85:
+        direction, entry_price = "YES", yes_price
+        edge = (1.0 - yes_price) * 0.8 - fee  # Expect 80% of remaining gap to close
+        confidence = min(yes_price + 0.05, 0.93)
+    elif yes_price <= 0.15:
+        direction, entry_price = "NO", 1.0 - yes_price
+        edge = yes_price * 0.8 - fee
+        confidence = min(1.0 - yes_price + 0.05, 0.93)
+    else:
+        return None
+
+    if edge <= 0.01:
+        return None
+
+    amount = _size_for_strategy("polymarket_convergence", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"PolyConv: yes={yes_price:.3f} {hours:.0f}h left edge={edge:.3f}",
+        strategy="polymarket_convergence", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "hours_to_expiry": hours, "venue": "polymarket"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 13: Liquidity fade (trade against illiquid brackets)
+# ---------------------------------------------------------------------------
+
+def _check_liquidity_fade(market, balance, spot_prices):
+    """
+    Illiquid brackets (wide bid-ask spread) are more likely mispriced.
+    When our fair value diverges from an illiquid bracket, trade it —
+    the market maker hasn't bothered to update.
+    """
+    if market.get("venue") != "kalshi" or market.get("strike_type") != "between":
+        return None
+    yes_bid = market.get("yes_bid")
+    yes_ask = market.get("yes_ask")
+    if yes_bid is None or yes_ask is None or yes_bid <= 0 or yes_ask <= 0:
+        return None
+    spread = yes_ask - yes_bid
+    if spread < 0.03:  # Only target wide-spread (illiquid) markets
+        return None
+
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2:
+        return None
+
+    vol = _get_realtime_vol(underlying_id)
+    floor_s = market.get("floor_strike")
+    cap_s = market.get("cap_strike")
+    if not floor_s or not cap_s:
+        return None
+
+    fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    if fair is None:
+        return None
+
+    # Use midpoint as market price (illiquid = wide spread)
+    mid_price = (yes_bid + yes_ask) / 2
+    no_mid = 1.0 - mid_price
+
+    edge_yes = fair - (yes_ask + _kalshi_fee(yes_ask))  # Buy at ask
+    edge_no = (1.0 - fair) - (no_mid + _kalshi_fee(no_mid))
+
+    if edge_yes > 0.02 and edge_yes >= edge_no and yes_ask <= 0.35:
+        direction, entry_price, edge = "YES", yes_ask, edge_yes
+        confidence = min(fair, 0.85)
+    elif edge_no > 0.02:
+        direction, entry_price, edge = "NO", no_mid, edge_no
+        confidence = min(1.0 - fair, 0.85)
+    else:
+        return None
+
+    amount = _size_for_strategy("liquidity_fade", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"LiqFade: spread={spread:.3f} fair={fair:.4f} mid={mid_price:.3f} edge={edge:.3f}",
+        strategy="liquidity_fade", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "spread": spread, "venue": "kalshi"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1148,6 +1487,16 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             event_trade_count[evt] += 1
             stats["cross_strike_arb"] += 1
 
+    # Bracket neighbor mispricing (runs on event groups)
+    for evt, group in event_groups.items():
+        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+            continue
+        neighbors = _check_bracket_neighbor(group, balance, spot)
+        for d in neighbors:
+            decisions.append(d)
+            event_trade_count[evt] += 1
+            stats["bracket_neighbor"] += 1
+
     # Per-market strategies
     for market in markets:
         reason = _validate_market(market)
@@ -1195,6 +1544,37 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             d = _check_mean_reversion(market, balance, spot)
             if d:
                 stats["mean_reversion"] += 1
+
+        # 7. Expiry acceleration (last 5 min, high confidence)
+        if not d:
+            d = _check_expiry_acceleration(market, balance, spot)
+            if d:
+                stats["expiry_acceleration"] += 1
+
+        # 8. Closing convergence (price approaching 0 or 1)
+        if not d:
+            d = _check_closing_convergence(market, balance)
+            if d:
+                stats["closing_convergence"] += 1
+
+        # 9. Correlation echo (BTC signal → ETH)
+        if not d:
+            active_sigs = {d2.market_id for d2 in decisions}
+            d = _check_correlation_echo(market, balance, spot, active_sigs)
+            if d:
+                stats["correlation_echo"] += 1
+
+        # 10. Polymarket convergence
+        if not d:
+            d = _check_polymarket_convergence(market, balance)
+            if d:
+                stats["polymarket_convergence"] += 1
+
+        # 11. Liquidity fade (illiquid brackets)
+        if not d:
+            d = _check_liquidity_fade(market, balance, spot)
+            if d:
+                stats["liquidity_fade"] += 1
 
         if d:
             # Attach market priority score for velocity-weighted ranking
