@@ -34,6 +34,8 @@ if __name__ == "__main__":
         self_tuner.run_tuning()
         import hourly_report
         hourly_report.generate()
+        import notify
+        notify.send_hourly_report()
     elif args.report:
         import hourly_report
         hourly_report.generate()
