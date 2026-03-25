@@ -71,7 +71,9 @@ def _compute_balance(starting, prices):
     unrealized = 0.0
     for t in open_trades:
         p = prices.get(t["market_id"], {})
-        price = p.get("yes_price" if t["direction"] == "YES" else "no_price", t["entry_price"])
+        price = p.get("yes_price" if t["direction"] == "YES" else "no_price")
+        if price is None:
+            price = t["entry_price"]  # No price data → assume flat (don't crash)
         unrealized += t["shares"] * (price - t["entry_price"])
 
     return starting + closed + unrealized
