@@ -23,6 +23,7 @@ if __name__ == "__main__":
     parser.add_argument("--run", action="store_true", help="Run simulation loop")
     parser.add_argument("--tune", action="store_true", help="Run self-tuning cycle")
     parser.add_argument("--report", action="store_true", help="Generate hourly report")
+    parser.add_argument("--ping", action="store_true", help="Send 15-min status ping")
     args = parser.parse_args()
 
     if args.migrate:
@@ -39,5 +40,8 @@ if __name__ == "__main__":
     elif args.report:
         import hourly_report
         hourly_report.generate()
+    elif args.ping:
+        import status_ping
+        status_ping.ping()
     else:
         parser.print_help()

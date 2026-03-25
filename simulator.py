@@ -307,6 +307,21 @@ def run_loop():
     print(f"[rivalclaw] Run complete — fetch={fetch_ms:.0f}ms analyze={analyze_ms:.0f}ms "
           f"wallet={wallet_ms:.0f}ms total={total_cycle_ms:.0f}ms")
 
+    # 8. Real-time Telegram alerts when trades execute
+    if trades_executed > 0 or closed:
+        try:
+            import notify
+            closed_wins = [c for c in closed if (c.get("pnl") or 0) > 0]
+            closed_losses = [c for c in closed if (c.get("pnl") or 0) <= 0]
+            closed_pnl = sum(c.get("pnl") or 0 for c in closed)
+            msg = (f"⚡ RIVALCLAW {cycle_started_iso[11:19]}\n"
+                   f"Traded: {trades_executed} new | Closed: {len(closed)} "
+                   f"(W:{len(closed_wins)} L:{len(closed_losses)} ${closed_pnl:+,.0f})\n"
+                   f"Balance: ${state['balance']:,.0f} | Open: {state['open_positions']+trades_executed}")
+            notify.send_telegram(msg, parse_mode="")
+        except Exception:
+            pass  # Never crash the loop for notifications
+
 
 def _log_cycle_metrics(started_at, markets, detected, qualified, executed,
                        closed, fetch_ms, analyze_ms, wallet_ms, total_ms):
