@@ -26,6 +26,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+import event_logger as elog
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -38,6 +40,32 @@ STALE_THRESHOLD_MINUTES = float(os.environ.get("RIVALCLAW_STALE_MINUTES", "30"))
 MIN_FAIR_VALUE_EDGE = float(os.environ.get("RIVALCLAW_MIN_FV_EDGE", "0.04"))
 KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
 VELOCITY_PREFERENCE = float(os.environ.get("RIVALCLAW_VELOCITY_PREFERENCE", "1.5"))
+
+# Data-driven edge multipliers (from 375-trade analysis)
+# NO bets: 45% WR, $34 avg → 3.5x better than YES (37% WR, $15 avg)
+NO_DIRECTION_BOOST = float(os.environ.get("RIVALCLAW_NO_BOOST", "1.3"))
+# Morning 08-12 UTC: 21% WR. Evening 16-24 UTC: 51-57% WR.
+TIME_WEIGHT = {
+    "morning": float(os.environ.get("RIVALCLAW_MORNING_WEIGHT", "0.5")),   # 08-12 UTC
+    "midday": float(os.environ.get("RIVALCLAW_MIDDAY_WEIGHT", "0.8")),     # 12-16 UTC
+    "afternoon": float(os.environ.get("RIVALCLAW_AFTERNOON_WEIGHT", "1.2")),# 16-20 UTC
+    "evening": float(os.environ.get("RIVALCLAW_EVENING_WEIGHT", "1.3")),   # 20-00 UTC
+    "night": float(os.environ.get("RIVALCLAW_NIGHT_WEIGHT", "0.7")),       # 00-08 UTC
+}
+
+def _time_of_day_weight() -> float:
+    """Scale position size by time-of-day performance pattern."""
+    hour = datetime.datetime.utcnow().hour
+    if 8 <= hour < 12:
+        return TIME_WEIGHT["morning"]
+    elif 12 <= hour < 16:
+        return TIME_WEIGHT["midday"]
+    elif 16 <= hour < 20:
+        return TIME_WEIGHT["afternoon"]
+    elif 20 <= hour < 24:
+        return TIME_WEIGHT["evening"]
+    else:
+        return TIME_WEIGHT["night"]
 
 NEAR_EXPIRY_HOURS = float(os.environ.get("RIVALCLAW_NEAR_EXPIRY_HOURS", "48"))
 MIN_MOMENTUM_PRICE = float(os.environ.get("RIVALCLAW_MIN_MOMENTUM_PRICE", "0.78"))
@@ -123,8 +151,13 @@ def _kelly_size(confidence: float, entry_price: float, balance: float,
     return min(kelly * fraction * balance, MAX_POSITION_PCT * balance)
 
 def _size_for_strategy(strategy: str, confidence: float, entry_price: float,
-                       balance: float) -> float | None:
+                       balance: float, direction: str = "YES") -> float | None:
     frac = KELLY_FRACTION_PROVEN if strategy in PROVEN_STRATEGIES else KELLY_FRACTION_NEW
+    # Data-driven: NO bets outperform YES by 3.5x. Boost NO sizing.
+    if direction == "NO":
+        frac *= NO_DIRECTION_BOOST
+    # Time-of-day weight: afternoon/evening perform best
+    frac *= _time_of_day_weight()
     return _kelly_size(confidence, entry_price, balance, frac)
 
 def _validate_market(market: dict) -> str | None:
@@ -180,7 +213,7 @@ def _make_decision(market, direction, confidence, edge, strategy, balance, venue
     entry_price = market.get("yes_price", 0) if direction == "YES" else (1.0 - (market.get("yes_price", 0) or 0))
     if entry_price <= 0.01 or entry_price >= 0.99:
         return None
-    amount = _size_for_strategy(strategy, confidence, entry_price, balance)
+    amount = _size_for_strategy(strategy, confidence, entry_price, balance, direction)
     if amount is None:
         return None
     meta = {"edge": edge, "venue": venue or market.get("venue", "polymarket")}
@@ -212,7 +245,7 @@ def _check_arbitrage(market, balance):
     direction = "NO" if no_p < (1.0 - yes_p) else "YES"
     entry_price = no_p if direction == "NO" else yes_p
     confidence = min(entry_price + edge, 0.99)
-    amount = _size_for_strategy("arbitrage", confidence, entry_price, balance)
+    amount = _size_for_strategy("arbitrage", confidence, entry_price, balance, direction)
     if amount is None:
         return None
     return TradeDecision(
@@ -247,21 +280,26 @@ def _compute_bracket_fair_value(spot, floor_strike, cap_strike, minutes, vol):
 # Price bucket preference: 0.10-0.30 is the sweet spot ($101 avg profit)
 # 0.50-0.70 is the dead zone (negative EV). Scale edge requirement by bucket.
 BUCKET_EDGE_MULTIPLIER = {
-    # entry_price range: edge multiplier (lower = more trades in that bucket)
-    "sweet": 0.5,    # 0.10-0.30: HALVE the edge requirement — our best bucket
-    "good": 0.8,     # <0.10 or 0.30-0.50: slightly easier threshold
+    # Data-driven from 375 trades:
+    # 0.15-0.30: $129 avg profit (THE GOLD MINE)
+    # 0.30-0.50: -$18 avg profit (MONEY BURNER)
+    # 0.70+: -$3 avg profit (dead weight)
+    "sweet": 0.4,    # 0.15-0.30: strongest bucket, easiest entry
+    "good": 0.7,     # <0.15: decent (deep OTM lottery tickets)
     "neutral": 1.0,  # 0.70-0.90: standard threshold
     "dead": 2.0,     # 0.50-0.70: DOUBLE the requirement — this range loses money
     "extreme": 1.5,  # >0.90: high WR but tiny payoffs, not worth capital
 }
 
 def _bucket_multiplier(entry_price):
-    if 0.10 <= entry_price < 0.30:
-        return BUCKET_EDGE_MULTIPLIER["sweet"]
-    elif entry_price < 0.10 or (0.30 <= entry_price < 0.50):
-        return BUCKET_EDGE_MULTIPLIER["good"]
+    if 0.15 <= entry_price < 0.30:
+        return BUCKET_EDGE_MULTIPLIER["sweet"]  # $129 avg profit
+    elif entry_price < 0.15:
+        return BUCKET_EDGE_MULTIPLIER["good"]   # $42 avg (deep OTM)
+    elif 0.30 <= entry_price < 0.50:
+        return BUCKET_EDGE_MULTIPLIER["dead"]   # -$18 avg (MONEY BURNER)
     elif 0.50 <= entry_price < 0.70:
-        return BUCKET_EDGE_MULTIPLIER["dead"]
+        return BUCKET_EDGE_MULTIPLIER["dead"]   # -$0.47 avg (worthless)
     elif entry_price >= 0.90:
         return BUCKET_EDGE_MULTIPLIER["extreme"]
     return BUCKET_EDGE_MULTIPLIER["neutral"]
@@ -375,7 +413,7 @@ def _check_fair_value(market, balance, spot_prices):
             direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.90), edge_no
         else:
             return None
-        amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance)
+        amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance, direction)
         if amount is None:
             return None
         return TradeDecision(
@@ -416,7 +454,7 @@ def _check_fair_value(market, balance, spot_prices):
         direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.95), edge_no
     else:
         return None
-    amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance)
+    amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance, direction)
     if amount is None:
         return None
     return TradeDecision(
@@ -516,7 +554,7 @@ def _check_spot_momentum(market, balance, spot_prices, spot_history):
         return None
 
     confidence = min(0.50 + edge * 2, 0.85)  # Conservative — momentum isn't certainty
-    amount = _size_for_strategy("spot_momentum", confidence, entry_price, balance)
+    amount = _size_for_strategy("spot_momentum", confidence, entry_price, balance, direction)
     if amount is None:
         return None
 
@@ -564,7 +602,7 @@ def _check_cross_strike_arb(event_markets: list[dict], balance: float) -> TradeD
         return None
 
     confidence = min(yes_price + edge * 0.5, 0.95)
-    amount = _size_for_strategy("cross_strike_arb", confidence, yes_price, balance)
+    amount = _size_for_strategy("cross_strike_arb", confidence, yes_price, balance, "YES")
     if amount is None:
         return None
 
@@ -643,7 +681,7 @@ def _check_bracket_cone(event_markets: list[dict], balance: float,
             continue
 
         confidence = min(fair, 0.85)
-        amount = _size_for_strategy("bracket_cone", confidence, yes_price, balance)
+        amount = _size_for_strategy("bracket_cone", confidence, yes_price, balance, "YES")
         if amount is None:
             continue
 
@@ -723,7 +761,7 @@ def _check_mean_reversion(market, balance, spot_prices):
     if edge <= MIN_EDGE:
         return None
 
-    amount = _size_for_strategy("mean_reversion", confidence, entry_price, balance)
+    amount = _size_for_strategy("mean_reversion", confidence, entry_price, balance, direction)
     if amount is None:
         return None
 
@@ -793,7 +831,7 @@ def _check_time_decay(market, balance, spot_prices):
     else:
         return None
 
-    amount = _size_for_strategy("time_decay", confidence, entry_price, balance)
+    amount = _size_for_strategy("time_decay", confidence, entry_price, balance, direction)
     if amount is None:
         return None
 
@@ -874,7 +912,7 @@ def _check_vol_skew(market, balance, spot_prices):
     else:
         return None
 
-    amount = _size_for_strategy("vol_skew", confidence, entry_price, balance)
+    amount = _size_for_strategy("vol_skew", confidence, entry_price, balance, direction)
     if amount is None:
         return None
 
@@ -1167,6 +1205,22 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             decisions.append(d)
             if evt:
                 event_trade_count[evt] += 1
+            # Strategy Lab: emit signal + decision
+            elog.signal(
+                strategy=d.strategy, market_id=d.market_id, direction=d.direction,
+                confidence=d.confidence, edge_estimate=(d.metadata or {}).get("edge", 0),
+                features={"venue": (d.metadata or {}).get("venue", "polymarket")},
+            )
+            elog.decision(
+                action="enter", strategy=d.strategy, market_id=d.market_id,
+                confidence=d.confidence, size_proposed=d.amount_usd,
+            )
+        else:
+            # No strategy fired — emit abstain
+            elog.decision(
+                action="abstain", strategy="none", market_id=market.get("market_id", ""),
+                reason="no strategy triggered",
+            )
 
     # Hedge engine: pair primary Kalshi trades with hedge legs
     hedged = []

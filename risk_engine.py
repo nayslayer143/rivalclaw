@@ -23,7 +23,7 @@ DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "riva
 # Risk limits
 MAX_CRYPTO_EXPOSURE_PCT = float(os.environ.get("RIVALCLAW_MAX_CRYPTO_PCT", "0.40"))  # 40% of balance
 MAX_SINGLE_ASSET_PCT = float(os.environ.get("RIVALCLAW_MAX_ASSET_PCT", "0.25"))  # 25% per asset
-TOURNAMENT_LOOKBACK = int(os.environ.get("RIVALCLAW_TOURNAMENT_LOOKBACK", "50"))  # trades
+TOURNAMENT_LOOKBACK = int(os.environ.get("RIVALCLAW_TOURNAMENT_LOOKBACK", "200"))  # trades (wide window to survive batch events)
 MIN_TOURNAMENT_TRADES = 5  # Minimum trades before scoring a strategy
 
 # Regime thresholds
