@@ -138,9 +138,23 @@ REPORT
 
 echo "[rivalclaw/daily] Report written: $REPORT"
 
+# ── Strategy Lab: research cycle + daily report ──
+echo "[rivalclaw/daily] Running Strategy Lab research cycle..."
+cd "$RIVALCLAW_DIR"
+source venv/bin/activate 2>/dev/null || true
+
+# Research cycle (diagnose → hypothesize → backtest)
+python strategy_lab/run_cycle.py 2>&1 | tail -20 || echo "[rivalclaw/daily] Strategy Lab cycle failed (non-fatal)"
+
+# Auto-promotion/demotion checks
+python -c "from strategy_lab.governor import auto_promote_cycle; actions = auto_promote_cycle(); [print(f'  → {a}') for a in actions]" 2>&1 || echo "[rivalclaw/daily] Governor check failed (non-fatal)"
+
+# Generate Strategy Lab daily report
+python strategy_lab/daily_report.py 2>&1 || echo "[rivalclaw/daily] Strategy Lab report failed (non-fatal)"
+
 # ── Commit and push ──
 cd "$RIVALCLAW_DIR"
-git add daily/
+git add daily/ strategies/ CHANGELOG.md strategy_registry.json experiments/ledger.json strategy_lab/memory.json 2>/dev/null
 git commit -m "$(cat <<EOF
 daily report $TODAY — day $day_num | bal=\$$balance pnl=\$$total_pnl trades=$total_trades
 
