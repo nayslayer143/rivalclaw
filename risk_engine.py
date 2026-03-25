@@ -127,14 +127,15 @@ def get_strategy_scores() -> dict[str, float]:
         wins = sum(1 for t in trades if t["pnl"] > 0)
         wr = wins / len(trades)
 
-        # Combined score: ROI weight + win rate weight
-        # ROI captures magnitude, WR captures consistency
+        # ROI-DRIVEN scoring (not WR-gated)
+        # Fair value buys cheap brackets: 25% WR but 17% ROI = great.
+        # WR is irrelevant if ROI is positive — magnitude matters, not frequency.
         if roi < -0.10:
             scores[strat] = 0.0  # Kill it — losing >10% of capital
         elif roi < 0:
             scores[strat] = 0.25  # Underweight — losing money
-        elif wr > 0.45 and roi > 0.05:
-            scores[strat] = 1.5  # Overweight — proven winner
+        elif roi > 0.10:
+            scores[strat] = 1.5  # Overweight — strong positive ROI
         elif wr > 0.40 and roi > 0:
             scores[strat] = 1.0  # Normal
         else:
@@ -256,9 +257,19 @@ def adjust_decision(decision, balance: float, regime: dict,
         elif decision.strategy == "spot_momentum":
             regime_mult = 0.5
 
-    # Apply multipliers but NEVER exceed position cap
-    final_mult = score * regime_mult
-    max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.04")) * 0.95  # 5% headroom for balance drift
+    # Speed-based sizing: fast markets get full size, slow markets get less
+    # This prevents slow daily contracts from locking capital that could cycle 96x/day
+    speed_cat = (decision.metadata or {}).get("speed_category", "unknown")
+    priority = (decision.metadata or {}).get("priority_score", 0)
+    if priority >= 14:  # 15-min crypto, same-day weather
+        speed_mult = 1.0
+    elif priority >= 10:  # hourly, daily crypto
+        speed_mult = 0.5  # Half size for slower markets
+    else:
+        speed_mult = 0.25  # Quarter size for anything slower
+
+    final_mult = score * regime_mult * speed_mult
+    max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.04")) * 0.95
     decision.amount_usd = min(decision.amount_usd * final_mult, max_position)
     decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
