@@ -258,22 +258,24 @@ def adjust_decision(decision, balance: float, regime: dict,
             regime_mult = 0.5
 
     # Speed-based sizing: fast markets get full size, slow markets get less
-    # This prevents slow daily contracts from locking capital that could cycle 96x/day
-    speed_cat = (decision.metadata or {}).get("speed_category", "unknown")
+    # Polymarket gets a floor — different venue, different dynamics, don't starve it
+    venue = (decision.metadata or {}).get("venue", "kalshi")
     priority = (decision.metadata or {}).get("priority_score", 0)
-    if priority >= 14:  # 15-min crypto, same-day weather
+    if venue == "polymarket":
+        speed_mult = 0.5  # Polymarket: half size (longer-dated but we need data)
+    elif priority >= 14:
         speed_mult = 1.0
-    elif priority >= 10:  # hourly, daily crypto
-        speed_mult = 0.5  # Half size for slower markets
+    elif priority >= 10:
+        speed_mult = 0.5
     else:
-        speed_mult = 0.25  # Quarter size for anything slower
+        speed_mult = 0.25
 
     final_mult = score * regime_mult * speed_mult
     max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.04")) * 0.95
     decision.amount_usd = min(decision.amount_usd * final_mult, max_position)
     decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
-    if decision.amount_usd < 3:
+    if decision.amount_usd < 1:
         return None
 
     return decision

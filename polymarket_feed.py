@@ -66,7 +66,7 @@ def fetch_markets():
     try:
         resp = requests.get(
             GAMMA_API,
-            params={"active": "true", "closed": "false", "limit": 100},
+            params={"active": "true", "closed": "false", "limit": 500, "order": "endDate", "ascending": "true"},
             timeout=30,
         )
         resp.raise_for_status()
@@ -74,6 +74,11 @@ def fetch_markets():
         markets_raw = raw if isinstance(raw, list) else raw.get("data", raw.get("markets", []))
     except Exception as e:
         print(f"[rivalclaw/feed] API error: {e}. Using cache.")
+        try:
+            import event_logger as elog
+            elog.error("polymarket_feed", type(e).__name__, str(e))
+        except Exception:
+            pass
         return _load_cached_markets()
 
     markets = []

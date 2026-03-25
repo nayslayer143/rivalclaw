@@ -1197,37 +1197,51 @@ def _check_correlation_echo(market, balance, spot_prices, active_signals: set):
 
 def _check_polymarket_convergence(market, balance):
     """
-    Polymarket markets with extreme prices (>0.85 or <0.15) near resolution
-    should converge further. Buy the dominant side.
+    Polymarket markets with extreme prices — buy the dominant side.
+    Works on both near-expiry AND longer-dated heavy favorites.
+    "Will Charlotte Hornets win NBA Finals?" at YES=0.01 → buy NO at 0.99.
     """
     if market.get("venue") != "polymarket":
         return None
-    minutes = _parse_expiry_minutes(market)
-    if minutes is None or minutes <= 0 or minutes > 72 * 60:
-        return None
     yes_price = market.get("yes_price", 0) or 0
-    if yes_price <= 0.05 or yes_price >= 0.95:
-        return None
+    if yes_price <= 0.005 or yes_price >= 0.995:
+        return None  # Too extreme, likely no liquidity
     fee = _fee(yes_price)
-    hours = minutes / 60.0
+
+    minutes = _parse_expiry_minutes(market)
+    hours = minutes / 60.0 if minutes and minutes > 0 else 999
 
     if yes_price >= 0.85:
         direction, entry_price = "YES", yes_price
-        edge = (1.0 - yes_price) * 0.8 - fee  # Expect 80% of remaining gap to close
-        confidence = min(yes_price + 0.05, 0.93)
+        edge = (1.0 - yes_price) * 0.7 - fee
+        confidence = min(yes_price, 0.93)
     elif yes_price <= 0.15:
         direction, entry_price = "NO", 1.0 - yes_price
-        edge = yes_price * 0.8 - fee
-        confidence = min(1.0 - yes_price + 0.05, 0.93)
+        edge = yes_price * 0.7 - fee
+        confidence = min(1.0 - yes_price, 0.93)
+    elif yes_price >= 0.75 and hours < 168:  # Moderate favorite + <1 week
+        direction, entry_price = "YES", yes_price
+        edge = (1.0 - yes_price) * 0.5 - fee
+        confidence = min(yes_price, 0.90)
+    elif yes_price <= 0.25 and hours < 168:
+        direction, entry_price = "NO", 1.0 - yes_price
+        edge = yes_price * 0.5 - fee
+        confidence = min(1.0 - yes_price, 0.90)
     else:
         return None
 
-    if edge <= 0.01:
+    if edge <= 0.005:
         return None
+
+    # Smaller positions on longer-dated markets (capital lock risk)
+    if hours > 168:  # >1 week
+        edge *= 0.3  # Heavily discount for time lock
 
     amount = _size_for_strategy("polymarket_convergence", confidence, entry_price, balance, direction)
     if amount is None:
-        return None
+        # Kelly breaks down at extreme prices (YES at 0.88 → Kelly=0).
+        # Use flat bet: 0.5% of balance for convergence plays.
+        amount = balance * 0.005
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
@@ -1746,7 +1760,8 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             )
             continue
 
-        evt = market.get("event_ticker", "")
+        # For Polymarket: no event_ticker, use market_id as event key (each market is independent)
+        evt = market.get("event_ticker", "") or market.get("market_id", "")
         if evt and event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
             elog.decision(
                 action="abstain", strategy="none", market_id=market.get("market_id", ""),
