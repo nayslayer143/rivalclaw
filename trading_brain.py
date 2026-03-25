@@ -1557,6 +1557,357 @@ def _check_multi_timeframe(market, balance, spot_prices, all_decisions: list):
 # Hedge engine — turns naked bets into defined-risk spreads
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Strategy 17: Election field arb (buy NO on every underdog in multi-candidate)
+# ---------------------------------------------------------------------------
+
+def _check_election_field(markets: list[dict], balance: float) -> list[TradeDecision]:
+    """
+    For multi-candidate elections: only one can win. Buy NO on every underdog.
+    12 candidates, buy NO on 11 → at most 1 loses. Structural profit.
+    """
+    # Group Polymarket markets by election (match by question pattern)
+    from collections import defaultdict
+    import re
+    elections = defaultdict(list)
+    for m in markets:
+        if m.get("venue") != "polymarket":
+            continue
+        q = m.get("question", "")
+        # Match "Will X win the YYYY EVENT?" pattern
+        match = re.search(r'win the (\d{4} .+?)[\?$]', q)
+        if match:
+            elections[match.group(1)].append(m)
+
+    decisions = []
+    for event, candidates in elections.items():
+        if len(candidates) < 4:  # Need multi-candidate field
+            continue
+        # Buy NO on every underdog (YES < 0.15)
+        for m in candidates:
+            yes = m.get("yes_price", 0) or 0
+            if yes >= 0.15 or yes <= 0.005:  # Skip favorites and zero-liquidity
+                continue
+            no_price = 1.0 - yes
+            fee = _fee(no_price)
+            edge = yes * 0.9 - fee  # 90% of the time this candidate loses
+            if edge <= 0.005:
+                continue
+            confidence = min(no_price, 0.93)
+            amount = balance * 0.003  # Tiny bets — many positions
+            if amount < 1:
+                continue
+            decisions.append(TradeDecision(
+                market_id=m["market_id"], question=m.get("question", ""),
+                direction="NO", confidence=confidence,
+                reasoning=f"FieldArb: {len(candidates)} candidates, {event[:30]} yes={yes:.3f} edge={edge:.3f}",
+                strategy="election_field_arb", amount_usd=amount, entry_price=no_price,
+                shares=amount / no_price if no_price > 0 else 0,
+                decision_generated_at_ms=time.time() * 1000,
+                metadata={"edge": edge, "field_size": len(candidates), "venue": "polymarket"},
+            ))
+    return decisions[:15]  # Cap at 15 per cycle
+
+
+# ---------------------------------------------------------------------------
+# Strategy 18: Vol regime switching (vol spike → buy OTM)
+# ---------------------------------------------------------------------------
+
+def _check_vol_regime(market, balance, spot_prices):
+    """
+    When realized vol jumps >2x in 30 min, market prices lag.
+    Buy OTM brackets that are now more likely under higher vol.
+    """
+    if market.get("venue") != "kalshi" or market.get("strike_type") != "between":
+        return None
+    underlying_id = _find_underlying(market)
+    if not underlying_id:
+        return None
+
+    # Compare recent vol (last 30min) vs baseline vol
+    recent_vol = _get_realtime_vol(underlying_id)  # Last 200 snapshots
+    baseline_vol = CRYPTO_VOL.get(underlying_id, 0.70)
+
+    vol_spike = recent_vol / baseline_vol if baseline_vol > 0 else 1.0
+    if vol_spike < 1.5:  # Need 50%+ vol increase
+        return None
+
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2 or minutes > 60:
+        return None
+
+    floor_s = market.get("floor_strike")
+    cap_s = market.get("cap_strike")
+    if not floor_s or not cap_s:
+        return None
+
+    # Under high vol, OTM brackets become more likely
+    fair_high_vol = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, recent_vol)
+    fair_low_vol = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, baseline_vol)
+    if fair_high_vol is None or fair_low_vol is None:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    # Market is pricing at low vol, but real vol is high
+    edge = fair_high_vol - (yes_price + _kalshi_fee(yes_price))
+    if edge <= 0.02:
+        return None
+
+    # Only buy YES on OTM brackets (cheap ones that high vol makes more likely)
+    if yes_price > 0.30:
+        return None
+
+    confidence = min(fair_high_vol, 0.85)
+    amount = _size_for_strategy("vol_regime", confidence, yes_price, balance, "YES")
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction="YES", confidence=confidence,
+        reasoning=f"VolRegime: spike={vol_spike:.1f}x fair_hi={fair_high_vol:.4f} fair_lo={fair_low_vol:.4f} mkt={yes_price:.3f} edge={edge:.3f}",
+        strategy="vol_regime", amount_usd=amount, entry_price=yes_price,
+        shares=amount / yes_price if yes_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "vol_spike": vol_spike, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 19: Correlation cascade (BTC resolves → trade ETH before it catches up)
+# ---------------------------------------------------------------------------
+
+def _check_correlation_cascade(market, balance, spot_prices, spot_history):
+    """
+    BTC and ETH are ~85% correlated with ~15min lag.
+    When BTC spot moves sharply, ETH contracts haven't repriced yet. Trade ETH.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    underlying_id = _find_underlying(market)
+    if underlying_id != "ethereum":  # Only trade ETH based on BTC signal
+        return None
+
+    # Check BTC momentum (the leading asset)
+    btc_history = spot_history.get("bitcoin", [])
+    if len(btc_history) < 5:
+        return None
+    btc_move = (btc_history[-1] - btc_history[0]) / btc_history[0] if btc_history[0] > 0 else 0
+
+    if abs(btc_move) < 0.003:  # BTC needs to move >0.3%
+        return None
+
+    # ETH should follow but hasn't yet — compute fair value with ETH spot
+    spot = spot_prices.get("ethereum")
+    if not spot or spot <= 0:
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 2 or minutes > 30:
+        return None
+
+    vol = _get_realtime_vol("ethereum")
+    strike_type = market.get("strike_type", "")
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    if strike_type == "between":
+        floor_s, cap_s = market.get("floor_strike"), market.get("cap_strike")
+        if not floor_s or not cap_s:
+            return None
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, vol)
+    else:
+        strike = market.get("floor_strike") or market.get("cap_strike")
+        if not strike:
+            return None
+        fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
+
+    if fair is None:
+        return None
+
+    no_price = 1.0 - yes_price
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+    edge_yes = fair - (yes_price + _kalshi_fee(yes_price))
+
+    min_edge = 0.015
+    if edge_no > min_edge and edge_no >= edge_yes:
+        direction, entry_price, edge = "NO", no_price, edge_no
+        confidence = min(1.0 - fair, 0.88)
+    elif edge_yes > min_edge:
+        direction, entry_price, edge = "YES", yes_price, edge_yes
+        confidence = min(fair, 0.88)
+    else:
+        return None
+
+    amount = _size_for_strategy("correlation_cascade", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"CorrCascade: BTC {btc_move:+.2%} → ETH fair={fair:.4f} mkt={yes_price:.3f} edge={edge:.3f}",
+        strategy="correlation_cascade", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "btc_move": btc_move, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 20: Pairs trading (long one bracket, short adjacent)
+# ---------------------------------------------------------------------------
+
+def _check_pairs_trade(event_markets: list[dict], balance: float,
+                       spot_prices: dict) -> list[TradeDecision]:
+    """
+    Go YES on one bracket + NO on adjacent bracket = bet on which half
+    the price lands in. Market neutral — profits from relative mispricing.
+    """
+    brackets = sorted(
+        [m for m in event_markets if m.get("strike_type") == "between"
+         and m.get("floor_strike") and m.get("yes_price")],
+        key=lambda m: m.get("floor_strike", 0)
+    )
+    if len(brackets) < 5:
+        return []
+
+    underlying_id = _find_underlying(brackets[0]) if brackets else None
+    if not underlying_id:
+        return []
+    spot = spot_prices.get(underlying_id)
+    if not spot or spot <= 0:
+        return []
+    minutes = _parse_expiry_minutes(brackets[0])
+    if minutes is None or minutes <= 2:
+        return []
+    vol = _get_realtime_vol(underlying_id)
+
+    decisions = []
+    for i in range(len(brackets) - 1):
+        a, b = brackets[i], brackets[i + 1]
+        a_yes = a.get("yes_price", 0) or 0
+        b_yes = b.get("yes_price", 0) or 0
+        if a_yes <= 0.02 or b_yes <= 0.02:
+            continue
+
+        # Compute fair values
+        a_fair = _compute_bracket_fair_value(
+            spot, a.get("floor_strike"), a.get("cap_strike"), minutes, vol)
+        b_fair = _compute_bracket_fair_value(
+            spot, b.get("floor_strike"), b.get("cap_strike"), minutes, vol)
+        if a_fair is None or b_fair is None:
+            continue
+
+        # Relative mispricing: if A is cheap relative to B vs fair ratio
+        if a_fair > 0 and b_fair > 0:
+            fair_ratio = a_fair / b_fair
+            market_ratio = a_yes / b_yes if b_yes > 0 else 0
+            if market_ratio > 0 and abs(fair_ratio - market_ratio) / fair_ratio > 0.30:
+                # Significant relative mispricing
+                if fair_ratio > market_ratio:
+                    # A is underpriced relative to B → buy A YES
+                    edge = (a_fair - a_yes) - _kalshi_fee(a_yes)
+                    if edge > 0.01 and a_yes <= 0.35:
+                        amount = _size_for_strategy("pairs_trade", min(a_fair, 0.85), a_yes, balance, "YES")
+                        if amount:
+                            decisions.append(TradeDecision(
+                                market_id=a["market_id"], question=a.get("question", ""),
+                                direction="YES", confidence=min(a_fair, 0.85),
+                                reasoning=f"Pairs: A/B ratio fair={fair_ratio:.2f} mkt={market_ratio:.2f} edge={edge:.3f}",
+                                strategy="pairs_trade", amount_usd=amount, entry_price=a_yes,
+                                shares=amount / a_yes if a_yes > 0 else 0,
+                                decision_generated_at_ms=time.time() * 1000,
+                                metadata={"edge": edge, "venue": "kalshi"},
+                            ))
+        if len(decisions) >= 3:
+            break
+    return decisions
+
+
+# ---------------------------------------------------------------------------
+# Strategy 21: NWS forecast delta (trade weather gaps after forecast updates)
+# ---------------------------------------------------------------------------
+
+def _check_forecast_delta(market, balance):
+    """
+    When NWS forecast changes, weather market prices lag.
+    If forecast shifted from 65→68°F but market still prices ">67°" at 50%,
+    it should be higher.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    weather_city = _find_weather_city(market)
+    if not weather_city:
+        return None
+
+    spot, vol = _get_weather_spot_and_vol(weather_city)
+    if not spot:
+        return None
+
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes <= 0:
+        return None
+
+    strike_type = market.get("strike_type", "")
+    if strike_type == "between":
+        floor_s = market.get("floor_strike")
+        cap_s = market.get("cap_strike")
+        if not floor_s or not cap_s:
+            return None
+        # Weather vol: forecast error / spot as fraction, scaled
+        weather_vol = vol / spot if spot > 0 else 0.05
+        scaled_vol = weather_vol * math.sqrt(365.25 * 24 * 60 / max(minutes, 1))
+        fair = _compute_bracket_fair_value(spot, floor_s, cap_s, minutes, scaled_vol)
+    elif strike_type in ("greater", "greater_or_equal", "less"):
+        strike = market.get("floor_strike") if strike_type != "less" else market.get("cap_strike")
+        if not strike:
+            return None
+        weather_vol = vol / spot if spot > 0 else 0.05
+        scaled_vol = weather_vol * math.sqrt(365.25 * 24 * 60 / max(minutes, 1))
+        fair = _compute_fair_value(spot, strike, minutes, scaled_vol, strike_type)
+    else:
+        return None
+
+    if fair is None:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0.02 or yes_price >= 0.98:
+        return None
+
+    fee = _kalshi_fee(yes_price)
+    no_price = 1.0 - yes_price
+    edge_yes = fair - (yes_price + fee)
+    edge_no = (1.0 - fair) - (no_price + _kalshi_fee(no_price))
+
+    if edge_yes > 0.03 and edge_yes >= edge_no:
+        direction, entry_price, edge = "YES", yes_price, edge_yes
+        confidence = min(fair, 0.88)
+    elif edge_no > 0.03:
+        direction, entry_price, edge = "NO", no_price, edge_no
+        confidence = min(1.0 - fair, 0.88)
+    else:
+        return None
+
+    amount = _size_for_strategy("forecast_delta", confidence, entry_price, balance, direction)
+    if amount is None:
+        amount = balance * 0.003
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"ForecastDelta: {weather_city} forecast={spot:.0f}°F fair={fair:.3f} mkt={yes_price:.3f} edge={edge:.3f}",
+        strategy="forecast_delta", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "forecast": spot, "venue": "kalshi"},
+    )
+
+
 HEDGE_RATIO = float(os.environ.get("RIVALCLAW_HEDGE_RATIO", "0.30"))  # Hedge = 30% of primary size
 HEDGE_STRIKE_OFFSET = float(os.environ.get("RIVALCLAW_HEDGE_OFFSET", "0.02"))  # 2% OTM for hedge
 
@@ -1749,6 +2100,22 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             event_trade_count[evt] += 1
             stats["bracket_neighbor"] += 1
 
+    # Pairs trading (runs on event groups)
+    for evt, group in event_groups.items():
+        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+            continue
+        pairs = _check_pairs_trade(group, balance, spot)
+        for d in pairs:
+            decisions.append(d)
+            event_trade_count[evt] += 1
+            stats["pairs_trade"] += 1
+
+    # Election field arb (runs on all Polymarket markets)
+    field_trades = _check_election_field(markets, balance)
+    for d in field_trades:
+        decisions.append(d)
+        stats["election_field_arb"] += 1
+
     # Per-market strategies
     for market in markets:
         reason = _validate_market(market)
@@ -1854,6 +2221,24 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             d = _check_multi_timeframe(market, balance, spot, decisions)
             if d:
                 stats["multi_timeframe"] += 1
+
+        # 15. Vol regime switching (vol spike → buy OTM)
+        if not d:
+            d = _check_vol_regime(market, balance, spot)
+            if d:
+                stats["vol_regime"] += 1
+
+        # 16. Correlation cascade (BTC move → trade ETH)
+        if not d:
+            d = _check_correlation_cascade(market, balance, spot, spot_history)
+            if d:
+                stats["correlation_cascade"] += 1
+
+        # 17. NWS forecast delta (weather gap after forecast update)
+        if not d:
+            d = _check_forecast_delta(market, balance)
+            if d:
+                stats["forecast_delta"] += 1
 
         if d:
             # Attach market priority score for velocity-weighted ranking
