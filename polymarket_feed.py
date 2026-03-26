@@ -14,7 +14,7 @@ from pathlib import Path
 GAMMA_API = "https://gamma-api.polymarket.com/markets"
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
 MIN_VOLUME = float(os.environ.get("RIVALCLAW_MIN_VOLUME", "10000"))
-CACHE_MAX_AGE_HOURS = float(os.environ.get("RIVALCLAW_CACHE_MAX_AGE_HOURS", "6"))
+CACHE_MAX_AGE_HOURS = float(os.environ.get("RIVALCLAW_CACHE_MAX_AGE_HOURS", "1"))
 
 # Config toggles (adjustment #1 and #4)
 FETCH_MODE = os.environ.get("RIVALCLAW_FETCH_MODE", "fresh")  # "fresh" or "cache_ok"

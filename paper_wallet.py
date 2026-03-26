@@ -306,7 +306,7 @@ def check_stops(current_prices):
         p = current_prices.get(t["market_id"], {})
         current_price = p.get("yes_price" if t["direction"] == "YES" else "no_price")
         if current_price is None:
-            current_price = t["entry_price"]  # No price data → assume flat
+            continue  # Skip trade if no fresh price — don't fake a flat mark
 
         unrealized_pnl = t["shares"] * (current_price - t["entry_price"])
         pnl_pct = round(unrealized_pnl / t["amount_usd"], 10) if t["amount_usd"] > 0 else 0.0
