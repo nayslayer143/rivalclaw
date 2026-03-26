@@ -157,6 +157,18 @@ def migrate():
             conn.execute("ALTER TABLE paper_trades ADD COLUMN expected_edge REAL")
         except sqlite3.OperationalError:
             pass
+        # Tracking columns for binary resolution and fee modeling
+        for col_sql in [
+            "ALTER TABLE paper_trades ADD COLUMN binary_outcome TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN resolved_price REAL",
+            "ALTER TABLE paper_trades ADD COLUMN resolution_source TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN entry_fee REAL DEFAULT 0",
+            "ALTER TABLE paper_trades ADD COLUMN exit_fee REAL DEFAULT 0",
+        ]:
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
         conn.commit()
     print(f"[rivalclaw] Migration complete. DB: {DB_PATH}")
 
