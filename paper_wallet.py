@@ -14,6 +14,8 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
+import event_logger as elog
+
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
 
 # Risk parameters — frozen parity with Mirofish
@@ -22,6 +24,11 @@ TAKE_PROFIT_PCT = float(os.environ.get("RIVALCLAW_TAKE_PROFIT_PCT", "0.50"))
 MAX_POSITION_PCT = float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.10"))
 MIN_HISTORY_DAYS = int(os.environ.get("RIVALCLAW_MIN_HISTORY_DAYS", "7"))
 STARTING_CAPITAL = float(os.environ.get("RIVALCLAW_STARTING_CAPITAL", "1000.0"))
+
+# Hard cap: no single trade can exceed this regardless of balance growth
+# Prevents paper-trading fantasy where $1K starting capital balloons to $440K
+# and suddenly allows $44K single bets
+MAX_TRADE_USD = float(os.environ.get("RIVALCLAW_MAX_TRADE_USD", "500.0"))
 
 # Execution simulation — frozen parity with Mirofish
 SLIPPAGE_BPS = float(os.environ.get("RIVALCLAW_SLIPPAGE_BPS", "50"))
@@ -171,9 +178,10 @@ def _simulate_execution(entry_price, amount_usd, shares, direction):
 def execute_trade(decision, cycle_started_at_ms=0.0):
     """Execute a paper trade with execution simulation. Frozen Mirofish semantics."""
     state = get_state()
-    cap = state["balance"] * MAX_POSITION_PCT
+    pct_cap = state["balance"] * MAX_POSITION_PCT
+    cap = min(pct_cap, MAX_TRADE_USD)  # Hard ceiling prevents paper-trading fantasy
     if decision.amount_usd > cap:
-        print(f"[rivalclaw/wallet] REJECT {decision.market_id[:30]}: amount=${decision.amount_usd:.1f} > cap=${cap:.1f} (bal=${state['balance']:.1f})")
+        print(f"[rivalclaw/wallet] REJECT {decision.market_id[:30]}: amount=${decision.amount_usd:.1f} > cap=${cap:.1f} (hard max=${MAX_TRADE_USD:.0f}, bal=${state['balance']:.1f})")
         return None
 
     entry_price = decision.entry_price
@@ -229,6 +237,16 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
     }
     if sim_metadata:
         result["execution_sim"] = sim_metadata
+
+    # Strategy Lab: emit trade event
+    elog.trade(
+        trade_id=trade_id, market_id=decision.market_id,
+        strategy=getattr(decision, "strategy", "arbitrage"),
+        direction=decision.direction, size=amount_usd, price=entry_price,
+        fees=sim_metadata.get("price_impact_pct", 0) * amount_usd / 100 if sim_metadata else 0,
+        latency_ms=signal_to_trade_ms,
+        slippage_estimate=sim_metadata.get("slippage_bps", 0) / 10000 if sim_metadata else 0,
+    )
     return result
 
 
@@ -298,6 +316,19 @@ def check_stops(current_prices):
                 "id": t["id"], "market_id": t["market_id"],
                 "status": status, "exit_price": current_price, "pnl": unrealized_pnl,
             })
+            # Strategy Lab: emit outcome event
+            opened_at = t["opened_at"] if t["opened_at"] else ts
+            try:
+                hold_h = (now - datetime.datetime.fromisoformat(opened_at)).total_seconds() / 3600
+            except (ValueError, TypeError):
+                hold_h = 0
+            elog.outcome(
+                trade_id=t["id"], pnl_gross=unrealized_pnl, pnl_net=unrealized_pnl,
+                fees_paid=0, hold_duration_hours=hold_h,
+                resolved_price=current_price, entry_price=t["entry_price"],
+                was_correct=unrealized_pnl >= 0,
+                strategy_version=t["strategy"] if t["strategy"] else "",
+            )
 
     if closed_updates:
         conn = _get_conn()
