@@ -36,6 +36,10 @@ LATENCY_PENALTY = float(os.environ.get("RIVALCLAW_LATENCY_PENALTY", "0.002"))
 FILL_RATE_MIN = float(os.environ.get("RIVALCLAW_FILL_RATE_MIN", "0.80"))
 EXECUTION_SIM = os.environ.get("RIVALCLAW_EXECUTION_SIM", "1") == "1"
 
+# Venue fee rates — applied to notional * min(price, 1-price) per contract
+POLYMARKET_FEE_RATE = float(os.environ.get("RIVALCLAW_POLYMARKET_FEE", "0.02"))
+KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
+
 # Experiment tracking (adjustment #8)
 EXPERIMENT_ID = os.environ.get("RIVALCLAW_EXPERIMENT_ID", "arb-bakeoff-2026-03")
 INSTANCE_ID = os.environ.get("RIVALCLAW_INSTANCE_ID", "rivalclaw")
@@ -150,8 +154,8 @@ def get_state():
     }
 
 
-def _simulate_execution(entry_price, amount_usd, shares, direction):
-    """Execution simulation — identical to Mirofish."""
+def _simulate_execution(entry_price, amount_usd, shares, direction, venue="polymarket"):
+    """Execution simulation with venue-aware fee deduction."""
     ideal_price = entry_price
 
     slippage_pct = SLIPPAGE_BPS / 10000.0
@@ -162,13 +166,18 @@ def _simulate_execution(entry_price, amount_usd, shares, direction):
 
     fill_rate = random.uniform(FILL_RATE_MIN, 1.0)
     adjusted_amount = amount_usd * fill_rate
+
+    # Deduct venue fees from the fill amount
+    fee_rate = KALSHI_TAKER_FEE_RATE if venue == "kalshi" else POLYMARKET_FEE_RATE
+    entry_fee = adjusted_amount * fee_rate * min(adjusted_price, 1.0 - adjusted_price)
+    adjusted_amount -= entry_fee
     adjusted_shares = adjusted_amount / adjusted_price if adjusted_price > 0 else 0
 
     sim_metadata = {
         "ideal_price": ideal_price, "adjusted_price": adjusted_price,
         "slippage_bps": SLIPPAGE_BPS, "latency_penalty": LATENCY_PENALTY,
         "fill_rate": fill_rate, "ideal_amount": amount_usd,
-        "adjusted_amount": adjusted_amount,
+        "adjusted_amount": adjusted_amount, "entry_fee": entry_fee,
         "price_impact_pct": ((adjusted_price - ideal_price) / ideal_price * 100)
                             if ideal_price > 0 else 0,
     }
@@ -189,12 +198,16 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
     shares = decision.shares
     sim_metadata = None
 
+    venue = (decision.metadata or {}).get("venue", "polymarket")
+
     if EXECUTION_SIM:
         entry_price, amount_usd, shares, sim_metadata = _simulate_execution(
-            entry_price, amount_usd, shares, decision.direction,
+            entry_price, amount_usd, shares, decision.direction, venue=venue,
         )
         if amount_usd > cap:
             return None
+
+    entry_fee = sim_metadata.get("entry_fee", 0.0) if sim_metadata else 0.0
 
     trade_executed_at_ms = time.time() * 1000
     signal_to_trade_ms = trade_executed_at_ms - decision.decision_generated_at_ms if decision.decision_generated_at_ms else 0
@@ -202,10 +215,10 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
     reasoning = getattr(decision, "reasoning", "")
     if sim_metadata:
         reasoning += (f" [sim: price {sim_metadata['ideal_price']:.3f}->"
-                      f"{sim_metadata['adjusted_price']:.3f}, fill {sim_metadata['fill_rate']:.0%}]")
+                      f"{sim_metadata['adjusted_price']:.3f}, fill {sim_metadata['fill_rate']:.0%}"
+                      f", fee ${entry_fee:.2f}]")
 
     ts = datetime.datetime.utcnow().isoformat()
-    venue = (decision.metadata or {}).get("venue", "polymarket")
     expected_edge = (decision.metadata or {}).get("edge", 0.0) if decision.metadata else 0.0
     conn = _get_conn()
     try:
@@ -215,8 +228,9 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
              status, confidence, reasoning, strategy, opened_at,
              experiment_id, instance_id,
              cycle_started_at_ms, decision_generated_at_ms,
-             trade_executed_at_ms, signal_to_trade_latency_ms, venue, expected_edge)
-            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?)
+             trade_executed_at_ms, signal_to_trade_latency_ms, venue, expected_edge,
+             entry_fee)
+            VALUES (?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             decision.market_id, decision.question, decision.direction,
             shares, entry_price, amount_usd,
@@ -225,6 +239,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
             EXPERIMENT_ID, INSTANCE_ID,
             cycle_started_at_ms, decision.decision_generated_at_ms,
             trade_executed_at_ms, signal_to_trade_ms, venue, expected_edge,
+            entry_fee,
         ))
         conn.commit()
         trade_id = cur.lastrowid
@@ -243,7 +258,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
         trade_id=trade_id, market_id=decision.market_id,
         strategy=getattr(decision, "strategy", "arbitrage"),
         direction=decision.direction, size=amount_usd, price=entry_price,
-        fees=sim_metadata.get("price_impact_pct", 0) * amount_usd / 100 if sim_metadata else 0,
+        fees=entry_fee,
         latency_ms=signal_to_trade_ms,
         slippage_estimate=sim_metadata.get("slippage_bps", 0) / 10000 if sim_metadata else 0,
     )
@@ -309,12 +324,24 @@ def check_stops(current_prices):
             )
 
         if should_close:
-            status = "expired" if expired else ("closed_win" if unrealized_pnl >= 0 else "closed_loss")
+            # Compute exit fee (same formula as entry)
+            venue = t["venue"] if t["venue"] else "polymarket"
+            fee_rate = KALSHI_TAKER_FEE_RATE if venue == "kalshi" else POLYMARKET_FEE_RATE
+            exit_notional = t["shares"] * current_price if current_price > 0 else 0
+            exit_fee = exit_notional * fee_rate * min(current_price, 1.0 - current_price)
+            entry_fee = t["entry_fee"] if t["entry_fee"] else 0.0
+            total_fees = entry_fee + exit_fee
+
+            # Net PnL after fees
+            pnl_gross = unrealized_pnl
+            pnl_net = pnl_gross - total_fees
+
+            status = "expired" if expired else ("closed_win" if pnl_net >= 0 else "closed_loss")
             ts = now.isoformat()
-            closed_updates.append((current_price, unrealized_pnl, status, ts, t["id"]))
+            closed_updates.append((current_price, pnl_net, status, ts, exit_fee, t["id"]))
             closed.append({
                 "id": t["id"], "market_id": t["market_id"],
-                "status": status, "exit_price": current_price, "pnl": unrealized_pnl,
+                "status": status, "exit_price": current_price, "pnl": pnl_net,
             })
             # Strategy Lab: emit outcome event
             opened_at = t["opened_at"] if t["opened_at"] else ts
@@ -323,10 +350,10 @@ def check_stops(current_prices):
             except (ValueError, TypeError):
                 hold_h = 0
             elog.outcome(
-                trade_id=t["id"], pnl_gross=unrealized_pnl, pnl_net=unrealized_pnl,
-                fees_paid=0, hold_duration_hours=hold_h,
+                trade_id=t["id"], pnl_gross=pnl_gross, pnl_net=pnl_net,
+                fees_paid=total_fees, hold_duration_hours=hold_h,
                 resolved_price=current_price, entry_price=t["entry_price"],
-                was_correct=unrealized_pnl >= 0,
+                was_correct=pnl_net >= 0,
                 strategy_version=t["strategy"] if t["strategy"] else "",
             )
 
@@ -334,7 +361,7 @@ def check_stops(current_prices):
         conn = _get_conn()
         try:
             conn.executemany(
-                "UPDATE paper_trades SET exit_price=?, pnl=?, status=?, closed_at=? WHERE id=?",
+                "UPDATE paper_trades SET exit_price=?, pnl=?, status=?, closed_at=?, exit_fee=? WHERE id=?",
                 closed_updates,
             )
             conn.commit()
