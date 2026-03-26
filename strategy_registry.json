@@ -34,7 +34,7 @@
       "id": "spot_momentum_v1.0",
       "family": "spot_momentum",
       "version": "1.0",
-      "status": "production",
+      "status": "degraded",
       "params": {
         "lookback_periods": 10,
         "min_trend_strength": 0.02
@@ -48,7 +48,7 @@
       "id": "cross_strike_arb_v1.0",
       "family": "cross_strike_arb",
       "version": "1.0",
-      "status": "production",
+      "status": "degraded",
       "params": {
         "min_deviation": 0.03
       },
@@ -72,7 +72,7 @@
       "id": "mean_reversion_v1.0",
       "family": "mean_reversion",
       "version": "1.0",
-      "status": "production",
+      "status": "degraded",
       "params": {
         "min_reversion_edge": 0.06
       },
