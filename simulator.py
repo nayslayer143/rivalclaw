@@ -11,6 +11,7 @@ import sqlite3
 import time
 import datetime
 from pathlib import Path
+import requests
 
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
 EXPERIMENT_ID = os.environ.get("RIVALCLAW_EXPERIMENT_ID", "arb-bakeoff-2026-03")
@@ -336,6 +337,16 @@ def run_loop():
         print(f"[rivalclaw] Stop check failed: {exc}")
         closed = []
 
+    # 5b. Binary resolution — check venue APIs for settled markets
+    try:
+        _resolve_kalshi_trades()
+    except Exception as exc:
+        print(f"[rivalclaw] Kalshi resolution check failed: {exc}")
+    try:
+        _resolve_polymarket_trades()
+    except Exception as exc:
+        print(f"[rivalclaw] Polymarket resolution check failed: {exc}")
+
     # 6. Daily snapshot + graduation check
     grad.maybe_snapshot()
 
@@ -353,6 +364,174 @@ def run_loop():
 
     # 8. Per-cycle trade alerts REMOVED — too noisy for Telegram
     # Keeping: hourly reports + 15-min pings only
+
+
+def _resolve_kalshi_trades():
+    """Check Kalshi API for resolution results on open Kalshi trades."""
+    try:
+        import kalshi_feed
+    except ImportError:
+        return
+
+    conn = _get_conn()
+    now = datetime.datetime.utcnow()
+
+    try:
+        open_trades = conn.execute("""
+            SELECT id, market_id, direction, entry_price, shares, amount_usd,
+                   entry_fee, venue
+            FROM paper_trades
+            WHERE status = 'open' AND (market_id LIKE 'KX%' OR venue = 'kalshi')
+        """).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return
+
+    if not open_trades:
+        conn.close()
+        return
+
+    closed_count = 0
+    for t in open_trades:
+        data = kalshi_feed._call_kalshi("GET", f"/markets/{t['market_id']}")
+        if not data:
+            continue
+        m = data.get("market", data)
+        result = m.get("result", "")
+        if not result:
+            continue
+
+        we_bet = t["direction"].lower()
+        we_won = (result == "yes" and we_bet == "yes") or (result == "no" and we_bet == "no")
+
+        if we_won:
+            exit_price = 1.0
+            binary_outcome = "correct"
+        else:
+            exit_price = 0.0
+            binary_outcome = "incorrect"
+
+        raw_pnl = t["shares"] * (exit_price - t["entry_price"])
+        entry_fee = t["entry_fee"] or 0
+        pnl = raw_pnl - entry_fee
+        status = "closed_win" if we_won else "closed_loss"
+
+        conn.execute("""
+            UPDATE paper_trades
+            SET exit_price=?, pnl=?, status=?, closed_at=?,
+                binary_outcome=?, resolved_price=?, resolution_source=?
+            WHERE id=?
+        """, (exit_price, pnl, status, now.isoformat(),
+              binary_outcome, exit_price, "kalshi_api", t["id"]))
+
+        sign = "+" if pnl >= 0 else ""
+        print(f"[rivalclaw] Kalshi resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
+        closed_count += 1
+
+    if closed_count:
+        conn.commit()
+    conn.close()
+
+
+def _resolve_polymarket_trades():
+    """Check Polymarket gamma API for resolution on open Polymarket trades."""
+    conn = _get_conn()
+    now = datetime.datetime.utcnow()
+
+    try:
+        open_trades = conn.execute("""
+            SELECT id, market_id, direction, entry_price, shares, amount_usd,
+                   entry_fee, venue
+            FROM paper_trades
+            WHERE status = 'open' AND (venue = 'polymarket' OR venue IS NULL)
+                  AND market_id NOT LIKE 'KX%%'
+        """).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return
+
+    if not open_trades:
+        conn.close()
+        return
+
+    # Group by market_id to avoid duplicate API calls
+    market_ids = list(set(t["market_id"] for t in open_trades))
+    resolutions = {}
+
+    for mid in market_ids:
+        try:
+            resp = requests.get(
+                f"https://gamma-api.polymarket.com/markets/{mid}",
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            is_resolved = data.get("resolved", False) or data.get("closed", False)
+            if is_resolved:
+                outcome_prices = data.get("outcomePrices", [])
+                outcomes = data.get("outcomes", [])
+                winning_outcome = None
+                if outcome_prices and outcomes:
+                    for label, price_str in zip(outcomes, outcome_prices):
+                        try:
+                            price = float(price_str)
+                        except (ValueError, TypeError):
+                            continue
+                        if price >= 0.95:
+                            winning_outcome = label.upper()
+                            break
+                if not winning_outcome:
+                    result_str = data.get("result", "")
+                    if result_str:
+                        winning_outcome = result_str.upper()
+                resolutions[mid] = {"resolved": True, "winning_outcome": winning_outcome}
+        except Exception as e:
+            print(f"[rivalclaw] Polymarket resolution check error for {mid[:20]}: {e}")
+            continue
+
+    closed_count = 0
+    for t in open_trades:
+        res = resolutions.get(t["market_id"])
+        if not res or not res["resolved"]:
+            continue
+
+        winning = res.get("winning_outcome")
+        if not winning:
+            continue
+
+        we_bet = t["direction"].upper()
+        we_won = (we_bet == winning)
+
+        if we_won:
+            exit_price = 1.0
+            binary_outcome = "correct"
+        else:
+            exit_price = 0.0
+            binary_outcome = "incorrect"
+
+        raw_pnl = t["shares"] * (exit_price - t["entry_price"])
+        entry_fee = t["entry_fee"] or 0
+        pnl = raw_pnl - entry_fee
+        status = "closed_win" if we_won else "closed_loss"
+
+        conn.execute("""
+            UPDATE paper_trades
+            SET exit_price=?, pnl=?, status=?, closed_at=?,
+                binary_outcome=?, resolved_price=?, resolution_source=?
+            WHERE id=?
+        """, (exit_price, pnl, status, now.isoformat(),
+              binary_outcome, exit_price, "polymarket_api", t["id"]))
+
+        sign = "+" if pnl >= 0 else ""
+        print(f"[rivalclaw] Polymarket resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
+        closed_count += 1
+
+    if closed_count:
+        conn.commit()
+    conn.close()
 
 
 def _run_shadow(candidates, markets, state, spot_prices, elog):
