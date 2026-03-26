@@ -186,6 +186,18 @@ def _simulate_execution(entry_price, amount_usd, shares, direction, venue="polym
 
 def execute_trade(decision, cycle_started_at_ms=0.0):
     """Execute a paper trade with execution simulation. Frozen Mirofish semantics."""
+    # Circuit breaker: reject trades if trading is halted
+    conn_check = _get_conn()
+    try:
+        status_row = conn_check.execute(
+            "SELECT value FROM context WHERE chat_id='rivalclaw' AND key='trading_status'"
+        ).fetchone()
+        if status_row and status_row["value"] == "halted":
+            print("[rivalclaw/wallet] REJECTED: trading halted by circuit breaker")
+            return None
+    finally:
+        conn_check.close()
+
     state = get_state()
     pct_cap = state["balance"] * MAX_POSITION_PCT
     cap = min(pct_cap, MAX_TRADE_USD)  # Hard ceiling prevents paper-trading fantasy

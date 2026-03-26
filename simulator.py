@@ -189,9 +189,8 @@ def run_loop():
     run_id = elog.start_run()
     print(f"[rivalclaw] Run loop starting — {cycle_started_iso} run={run_id}")
 
-    # Auto-reload wallet if balance drops below $100 (learning must continue)
+    # Circuit breaker: halt trading if balance drops below threshold
     RELOAD_THRESHOLD = float(os.environ.get("RIVALCLAW_RELOAD_THRESHOLD", "100"))
-    RELOAD_AMOUNT = float(os.environ.get("RIVALCLAW_RELOAD_AMOUNT", "1000"))
     conn = _get_conn()
     try:
         row = conn.execute(
@@ -204,13 +203,13 @@ def run_loop():
         ).fetchone()[0]
         est_balance = current_starting + closed_pnl
         if est_balance < RELOAD_THRESHOLD:
-            new_starting = current_starting + RELOAD_AMOUNT
             conn.execute(
-                "UPDATE context SET value=? WHERE chat_id='rivalclaw' AND key='starting_balance'",
-                (str(new_starting),))
+                "INSERT OR REPLACE INTO context (chat_id, key, value) VALUES ('rivalclaw', 'trading_status', 'halted')")
             conn.commit()
-            print(f"[rivalclaw] WALLET RELOAD: ${current_starting:.0f} -> ${new_starting:.0f} "
-                  f"(balance was ${est_balance:.0f}, injected ${RELOAD_AMOUNT:.0f})")
+            print(f"[rivalclaw] HALTED: balance ${est_balance:.0f} < ${RELOAD_THRESHOLD:.0f} threshold")
+            elog.end_run()
+            conn.close()
+            return  # Exit run_loop entirely
     finally:
         conn.close()
 
