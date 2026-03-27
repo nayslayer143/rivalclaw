@@ -1,0 +1,258 @@
+[rivalclaw/daily] Report written: /Users/nayslayer/rivalclaw/daily/2026-03-25.md
+[rivalclaw/daily] Running Strategy Lab research cycle...
+/Users/nayslayer/rivalclaw/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+
+============================================================
+STRATEGY LAB — Research Cycle 20260325-1100
+============================================================
+
+[1/3] Running diagnostics...
+[strategy_lab/diagnose] Report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/diagnostic-2026-03-25.json
+  → 4 strategies analyzed, 0 drift flags, 10 missed opps
+
+[2/3] Generating hypotheses...
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 1)
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 2)
+[strategy_lab/hypothesize] Failed to generate hypotheses after 2 attempts
+  → No hypotheses generated (Ollama may be offline)
+[strategy_lab] Cycle report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/cycle-20260325-1100.json
+[governor] fair_value_directional_v1.0: production → degraded (Triggers: high_drawdown, low_win_rate, consecutive_losses)
+  → DEMOTED fair_value_directional_v1.0
+[strategy_lab/daily_report] Saved: /Users/nayslayer/rivalclaw/daily/strategy-lab-2026-03-25.md
+# Strategy Lab Report — 2026-03-25
+
+## 1. System Health
+
+| Status | Count |
+|--------|-------|
+| production | 7 |
+| degraded | 1 |
+| **Total** | **8** |
+
+## 2. Key Findings
+
+- **Top performer:** fair_value_directional — $+1774.13 PnL, 18% WR
+- **Worst performer:** bracket_neighbor — $+0.00 PnL, 0% WR
+- **Regime calm:** 79 trades, $+1800.62 PnL
+- **Signal calibration:** overconfident (confidence 0.77 vs actual 0.15)
+
+## 3. Candidate Hypotheses
+
+- No hypotheses generated this cycle
+
+## 4. Evaluation Results
+
+- No backtests completed
+
+## 5. Promotions / Demotions
+
+- No state changes today
+
+## 6. Memory Updates
+
+- No lessons recorded yet
+
+## 7. Next Actions
+
+- Missed: Bitcoin price range  on Mar 25, 2026? (Δ95%)
+- Missed: Bitcoin price range  on Mar 25, 2026? (Δ95%)
+- Missed: Bitcoin price range  on Mar 25, 2026? (Δ95%)
+- Continue data collection for next research cycle
+
+[main 2cf08db] daily report 2026-03-25 — day 2 | bal=$11055.6413529175 pnl=$11951.24 trades=405
+ Committer: Jordan Schuster <nayslayer@jordans-mbp-2.lan>
+Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly. Run the
+following command and follow the instructions in your editor to edit
+your configuration file:
+
+    git config --global --edit
+
+After doing this, you may fix the identity used for this commit with:
+
+    git commit --amend --reset-author
+
+ 7 files changed, 605 insertions(+)
+ create mode 100644 daily/2026-03-25.md
+ create mode 100644 daily/hourly-latest.md
+ create mode 100644 daily/hourly-log.md
+ create mode 100644 daily/strategy-lab-2026-03-25.md
+ create mode 100644 experiments/ledger.json
+ create mode 100644 strategy_lab/memory.json
+ create mode 100644 strategy_registry.json
+[rivalclaw/daily] Push failed
+[rivalclaw/daily] Done.
+[rivalclaw/daily] Report written: /Users/nayslayer/rivalclaw/daily/2026-03-26.md
+[rivalclaw/daily] Running Strategy Lab research cycle...
+/Users/nayslayer/rivalclaw/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+
+============================================================
+STRATEGY LAB — Research Cycle 20260326-1100
+============================================================
+
+[1/3] Running diagnostics...
+[strategy_lab/diagnose] Report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/diagnostic-2026-03-26.json
+  → 14 strategies analyzed, 0 drift flags, 10 missed opps
+
+[2/3] Generating hypotheses...
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 1)
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 2)
+[strategy_lab/hypothesize] Failed to generate hypotheses after 2 attempts
+  → No hypotheses generated (Ollama may be offline)
+[strategy_lab] Cycle report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/cycle-20260326-1100.json
+[governor] spot_momentum_v1.0: production → degraded (Triggers: high_drawdown, consecutive_losses)
+[governor] cross_strike_arb_v1.0: production → degraded (Triggers: rolling_pnl_negative, consecutive_losses)
+[governor] mean_reversion_v1.0: production → degraded (Triggers: high_drawdown, consecutive_losses)
+  → DEMOTED spot_momentum_v1.0
+  → DEMOTED cross_strike_arb_v1.0
+  → DEMOTED mean_reversion_v1.0
+[strategy_lab/daily_report] Saved: /Users/nayslayer/rivalclaw/daily/strategy-lab-2026-03-26.md
+# Strategy Lab Report — 2026-03-26
+
+## 1. System Health
+
+| Status | Count |
+|--------|-------|
+| production | 4 |
+| degraded | 4 |
+| **Total** | **8** |
+
+## 2. Key Findings
+
+- **Top performer:** bracket_neighbor — $+223632.85 PnL, 39% WR
+- **Worst performer:** polymarket_convergence — $-6127.13 PnL, 5% WR
+- **Regime calm:** 13084 trades, $+436540.88 PnL
+- **Signal calibration:** overconfident (confidence 0.83 vs actual 0.15)
+
+## 3. Candidate Hypotheses
+
+- No hypotheses generated this cycle
+
+## 4. Evaluation Results
+
+- No backtests completed
+
+## 5. Promotions / Demotions
+
+- No state changes today
+
+## 6. Memory Updates
+
+- No lessons recorded yet
+
+## 7. Next Actions
+
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Continue data collection for next research cycle
+
+[main 8594611] daily report 2026-03-26 — day 3 | bal=$290975.506828048 pnl=$447217.46 trades=13265
+ Committer: Jordan Schuster <nayslayer@jordans-mbp-2.lan>
+Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly. Run the
+following command and follow the instructions in your editor to edit
+your configuration file:
+
+    git config --global --edit
+
+After doing this, you may fix the identity used for this commit with:
+
+    git commit --amend --reset-author
+
+ 5 files changed, 196 insertions(+), 25 deletions(-)
+ create mode 100644 daily/2026-03-26.md
+ create mode 100644 daily/strategy-lab-2026-03-26.md
+[rivalclaw/daily] Push failed
+[rivalclaw/daily] Done.
+[rivalclaw/daily] Report written: /Users/nayslayer/rivalclaw/daily/2026-03-27.md
+[rivalclaw/daily] Running Strategy Lab research cycle...
+/Users/nayslayer/rivalclaw/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+
+============================================================
+STRATEGY LAB — Research Cycle 20260327-1100
+============================================================
+
+[1/3] Running diagnostics...
+[strategy_lab/diagnose] Report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/diagnostic-2026-03-27.json
+  → 15 strategies analyzed, 0 drift flags, 10 missed opps
+
+[2/3] Generating hypotheses...
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 1)
+[strategy_lab/hypothesize] Ollama error: HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)
+[strategy_lab/hypothesize] Ollama returned nothing (attempt 2)
+[strategy_lab/hypothesize] Failed to generate hypotheses after 2 attempts
+  → No hypotheses generated (Ollama may be offline)
+[strategy_lab] Cycle report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/cycle-20260327-1100.json
+[governor] time_decay_v1.0: production → degraded (Triggers: high_drawdown, consecutive_losses)
+  → DEMOTED time_decay_v1.0
+[strategy_lab/daily_report] Saved: /Users/nayslayer/rivalclaw/daily/strategy-lab-2026-03-27.md
+# Strategy Lab Report — 2026-03-27
+
+## 1. System Health
+
+| Status | Count |
+|--------|-------|
+| production | 3 |
+| degraded | 5 |
+| **Total** | **8** |
+
+## 2. Key Findings
+
+- **Top performer:** polymarket_convergence — $+99306.70 PnL, 14% WR
+- **Worst performer:** forecast_delta — $-2201.81 PnL, 28% WR
+- **Regime calm:** 31651 trades, $+204105.17 PnL
+- **Signal calibration:** overconfident (confidence 0.84 vs actual 0.15)
+
+## 3. Candidate Hypotheses
+
+- No hypotheses generated this cycle
+
+## 4. Evaluation Results
+
+- No backtests completed
+
+## 5. Promotions / Demotions
+
+- No state changes today
+
+## 6. Memory Updates
+
+- No lessons recorded yet
+
+## 7. Next Actions
+
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Continue data collection for next research cycle
+
+[main 8ccdaf1] daily report 2026-03-27 — day 4 | bal=$95672.5801994864 pnl=$0 trades=0
+ Committer: Jordan Schuster <nayslayer@jordans-mbp-2.lan>
+Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly. Run the
+following command and follow the instructions in your editor to edit
+your configuration file:
+
+    git config --global --edit
+
+After doing this, you may fix the identity used for this commit with:
+
+    git commit --amend --reset-author
+
+ 3 files changed, 105 insertions(+), 1 deletion(-)
+ create mode 100644 daily/2026-03-27.md
+ create mode 100644 daily/strategy-lab-2026-03-27.md
+[rivalclaw/daily] Push failed
+[rivalclaw/daily] Done.

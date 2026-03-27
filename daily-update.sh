@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# RivalClaw daily update — pulls stats from DB, generates report, commits + pushes
+set -euo pipefail
+
+RIVALCLAW_DIR="$HOME/rivalclaw"
+DB="$RIVALCLAW_DIR/rivalclaw.db"
+TODAY=$(date -u +%Y-%m-%d)
+REPORT="$RIVALCLAW_DIR/daily/$TODAY.md"
+EXPERIMENT_START="2026-03-24"
+
+# ── Calculate experiment day ──
+start_epoch=$(date -j -f "%Y-%m-%d" "$EXPERIMENT_START" +%s 2>/dev/null || date -d "$EXPERIMENT_START" +%s)
+today_epoch=$(date -u +%s)
+day_num=$(( (today_epoch - start_epoch) / 86400 + 1 ))
+
+# ── Query DB ──
+balance=$(sqlite3 "$DB" "SELECT COALESCE(balance, 1000.0) FROM daily_pnl ORDER BY date DESC LIMIT 1;" 2>/dev/null || echo "1000.00")
+roi_pct=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(roi_pct, 2), 0) FROM daily_pnl WHERE date='$TODAY' LIMIT 1;" 2>/dev/null || echo "0")
+total_trades=$(sqlite3 "$DB" "SELECT COUNT(*) FROM paper_trades WHERE status != 'open';" 2>/dev/null || echo "0")
+wins=$(sqlite3 "$DB" "SELECT COUNT(*) FROM paper_trades WHERE status='closed_win';" 2>/dev/null || echo "0")
+losses=$(sqlite3 "$DB" "SELECT COUNT(*) FROM paper_trades WHERE status IN ('closed_loss','expired');" 2>/dev/null || echo "0")
+open_positions=$(sqlite3 "$DB" "SELECT COUNT(*) FROM paper_trades WHERE status='open';" 2>/dev/null || echo "0")
+
+# Latency stats
+avg_latency=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(AVG(signal_to_trade_latency_ms), 1), 0) FROM paper_trades WHERE signal_to_trade_latency_ms > 0;" 2>/dev/null || echo "0")
+avg_cycle=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(AVG(total_cycle_ms), 1), 0) FROM cycle_metrics;" 2>/dev/null || echo "0")
+avg_fetch=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(AVG(fetch_ms), 1), 0) FROM cycle_metrics;" 2>/dev/null || echo "0")
+avg_analyze=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(AVG(analyze_ms), 1), 0) FROM cycle_metrics;" 2>/dev/null || echo "0")
+avg_wallet=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(AVG(wallet_ms), 1), 0) FROM cycle_metrics;" 2>/dev/null || echo "0")
+total_cycles=$(sqlite3 "$DB" "SELECT COUNT(*) FROM cycle_metrics;" 2>/dev/null || echo "0")
+
+# Graduation
+grad_days=$(sqlite3 "$DB" "SELECT COUNT(*) FROM daily_pnl;" 2>/dev/null || echo "0")
+
+# Win rate
+if [ "$total_trades" -gt 0 ]; then
+    win_rate=$(echo "scale=1; $wins * 100 / $total_trades" | bc)
+else
+    win_rate="N/A"
+fi
+
+# Total PnL
+total_pnl=$(sqlite3 "$DB" "SELECT COALESCE(ROUND(SUM(pnl), 2), 0) FROM paper_trades WHERE status != 'open';" 2>/dev/null || echo "0")
+roi_total=$(echo "scale=2; $total_pnl * 100 / 1000" | bc 2>/dev/null || echo "0.00")
+
+# Recent cycle metrics
+recent_cycles=$(sqlite3 -header -column "$DB" "
+    SELECT cycle_started_at, markets_fetched as mkts, opportunities_detected as opps,
+           trades_executed as trades, ROUND(fetch_ms,0) as fetch, ROUND(analyze_ms,0) as analyze,
+           ROUND(wallet_ms,0) as wallet, ROUND(total_cycle_ms,0) as total
+    FROM cycle_metrics ORDER BY id DESC LIMIT 10;
+" 2>/dev/null || echo "(none)")
+
+# Recent trades
+recent_trades=$(sqlite3 -header -column "$DB" "
+    SELECT market_id, direction, ROUND(entry_price,3) as entry,
+           ROUND(exit_price,3) as exit, ROUND(pnl,2) as pnl, status,
+           ROUND(signal_to_trade_latency_ms,0) as latency_ms
+    FROM paper_trades WHERE status != 'open' ORDER BY closed_at DESC LIMIT 5;
+" 2>/dev/null || echo "(none)")
+
+# ── Generate report ──
+cat > "$REPORT" <<REPORT
+# RivalClaw Daily Report -- $TODAY (Day $day_num/14)
+
+## Performance Summary
+
+| Metric | Value |
+|--------|-------|
+| Balance | \$$balance |
+| Total PnL | \$$total_pnl |
+| ROI (total) | ${roi_total}% |
+| ROI (today) | ${roi_pct}% |
+| Win Rate | ${win_rate}% ($wins W / $losses L) |
+| Open Positions | $open_positions |
+| Graduation Progress | Day $grad_days / 7 |
+
+## Latency Breakdown (key experiment metric)
+
+| Phase | Avg (ms) |
+|-------|----------|
+| Fetch (API + cache) | ${avg_fetch}ms |
+| Analyze (arb detection) | ${avg_analyze}ms |
+| Wallet (execution sim) | ${avg_wallet}ms |
+| **Total cycle** | **${avg_cycle}ms** |
+| Signal-to-trade | ${avg_latency}ms |
+
+Total cycles run: $total_cycles
+
+## Recent Cycle Metrics
+
+\`\`\`
+$recent_cycles
+\`\`\`
+
+## Recent Trades
+
+\`\`\`
+$recent_trades
+\`\`\`
+
+## Tuner Adjustments
+
+$(sqlite3 "$DB" "SELECT parameter, old_value, new_value, reason, sample_size FROM tuning_log WHERE date='$TODAY' AND parameter != 'none' AND parameter != 'cooldown' ORDER BY tuned_at ASC;" 2>/dev/null | while IFS='|' read -r param old new reason samples; do
+    echo "- **$param**: $old -> $new ($reason, n=$samples)"
+done)
+$(sqlite3 "$DB" "SELECT COUNT(*) FROM tuning_log WHERE date='$TODAY' AND parameter != 'none' AND parameter != 'cooldown';" 2>/dev/null | while read cnt; do
+    [ "$cnt" = "0" ] && echo "No tuner adjustments today."
+done)
+
+## Market Speed Breakdown
+
+$(sqlite3 "$DB" "
+SELECT
+  CASE
+    WHEN ms.speed_score >= 3 THEN 'fast (3)'
+    WHEN ms.speed_score >= 2 THEN 'medium (2)'
+    WHEN ms.speed_score >= 1 THEN 'slow (1)'
+    ELSE 'unknown (0)'
+  END as tier,
+  COUNT(DISTINCT ms.market_id) as markets,
+  COUNT(DISTINCT pt.id) as trades,
+  COALESCE(ROUND(SUM(CASE WHEN pt.status != 'open' THEN pt.pnl ELSE 0 END), 2), 0) as pnl
+FROM market_scores ms
+LEFT JOIN paper_trades pt ON ms.market_id = pt.market_id
+WHERE ms.scored_at >= '$TODAY'
+GROUP BY tier
+ORDER BY ms.speed_score DESC;
+" 2>/dev/null | while IFS='|' read -r tier markets trades pnl; do
+    echo "- **$tier**: $markets markets, $trades trades, PnL=\$$pnl"
+done)
+
+Capital velocity: $(sqlite3 "$DB" "SELECT COALESCE(ROUND(SUM(amount_usd) / 1000.0, 1), 0) FROM paper_trades WHERE opened_at >= '$TODAY';" 2>/dev/null || echo "0")x today
+
+---
+*Auto-generated by RivalClaw daily-update.sh | Experiment: arb-bakeoff-2026-03 | Instance: rivalclaw*
+REPORT
+
+echo "[rivalclaw/daily] Report written: $REPORT"
+
+# ── Strategy Lab: research cycle + daily report ──
+echo "[rivalclaw/daily] Running Strategy Lab research cycle..."
+cd "$RIVALCLAW_DIR"
+source venv/bin/activate 2>/dev/null || true
+
+# Research cycle (diagnose → hypothesize → backtest)
+python strategy_lab/run_cycle.py 2>&1 | tail -20 || echo "[rivalclaw/daily] Strategy Lab cycle failed (non-fatal)"
+
+# Auto-promotion/demotion checks
+python -c "from strategy_lab.governor import auto_promote_cycle; actions = auto_promote_cycle(); [print(f'  → {a}') for a in actions]" 2>&1 || echo "[rivalclaw/daily] Governor check failed (non-fatal)"
+
+# Generate Strategy Lab daily report
+python strategy_lab/daily_report.py 2>&1 || echo "[rivalclaw/daily] Strategy Lab report failed (non-fatal)"
+
+# ── Commit and push ──
+cd "$RIVALCLAW_DIR"
+git add daily/ strategies/ CHANGELOG.md strategy_registry.json experiments/ledger.json strategy_lab/memory.json 2>/dev/null
+git commit -m "$(cat <<EOF
+daily report $TODAY — day $day_num | bal=\$$balance pnl=\$$total_pnl trades=$total_trades
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+EOF
+)" 2>/dev/null || echo "[rivalclaw/daily] No changes to commit"
+
+git push origin main 2>/dev/null || echo "[rivalclaw/daily] Push failed"
+
+echo "[rivalclaw/daily] Done."
