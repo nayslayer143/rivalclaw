@@ -85,7 +85,7 @@
       "id": "time_decay_v1.0",
       "family": "time_decay",
       "version": "1.0",
-      "status": "production",
+      "status": "degraded",
       "params": {
         "min_decay_edge": 0.03
       },
