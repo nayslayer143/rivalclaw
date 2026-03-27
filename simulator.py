@@ -17,6 +17,9 @@ DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "riva
 EXPERIMENT_ID = os.environ.get("RIVALCLAW_EXPERIMENT_ID", "arb-bakeoff-2026-03")
 INSTANCE_ID = os.environ.get("RIVALCLAW_INSTANCE_ID", "rivalclaw")
 
+# Protocol routing toggle — set to False to revert to legacy paper_wallet
+USE_PROTOCOL = True
+
 
 def _get_conn():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +187,11 @@ def run_loop():
     import trading_brain as brain
     import graduation as grad
     import event_logger as elog
+    import protocol_adapter
+
+    # Initialize protocol engine (idempotent — safe to call every cycle)
+    if USE_PROTOCOL:
+        protocol_adapter.init_engine(str(Path(__file__).parent))
 
     cycle_started_at_ms = time.time() * 1000
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
@@ -239,7 +247,17 @@ def run_loop():
     markets = market_classifier.classify_and_filter(markets)
 
     # 2. Get wallet state + spot prices for fair value
-    state = wallet.get_state()
+    if USE_PROTOCOL:
+        state = protocol_adapter.get_state()
+        # Protocol get_state() is minimal; supplement with legacy fields brain needs
+        if "win_rate" not in state:
+            _legacy = wallet.get_state()
+            state.setdefault("win_rate", _legacy.get("win_rate", 0.0))
+            state.setdefault("sharpe_ratio", _legacy.get("sharpe_ratio"))
+            state.setdefault("max_drawdown", _legacy.get("max_drawdown", 0.0))
+            state.setdefault("total_trades", _legacy.get("total_trades", 0))
+    else:
+        state = wallet.get_state()
     spot_prices = spot_feed.get_spot_prices()
     # Log spot prices for realized vol computation (self-tuner)
     if spot_prices:
@@ -295,11 +313,18 @@ def run_loop():
     open_ids = wallet.get_open_market_ids()
     trades_executed = 0
     opportunities_qualified = 0
+    # Stable cycle_id derived from cycle start time
+    cycle_id = str(int(cycle_started_at_ms))[:12]
     for d in decisions:
         if d.market_id in open_ids:
             continue
         opportunities_qualified += 1
-        result = wallet.execute_trade(d, cycle_started_at_ms=cycle_started_at_ms)
+        if USE_PROTOCOL:
+            result = protocol_adapter.execute_trade(
+                d, cycle_started_at_ms=cycle_started_at_ms, cycle_id=cycle_id
+            )
+        else:
+            result = wallet.execute_trade(d, cycle_started_at_ms=cycle_started_at_ms)
         if result:
             open_ids.add(d.market_id)
             trades_executed += 1
@@ -328,7 +353,10 @@ def run_loop():
     # 5. Check stops (always runs, both venues)
     try:
         current_prices = wallet._get_all_latest_prices()
-        closed = wallet.check_stops(current_prices)
+        if USE_PROTOCOL:
+            closed = protocol_adapter.check_stops(current_prices)
+        else:
+            closed = wallet.check_stops(current_prices)
         for c in closed:
             sign = "+" if (c["pnl"] or 0) >= 0 else ""
             print(f"[rivalclaw] Stop closed: {c['market_id']} -> {c['status']} "
