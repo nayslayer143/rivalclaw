@@ -1,0 +1,157 @@
+{
+  "date": "2026-03-25",
+  "lookback_days": 14,
+  "event_count": 137690,
+  "strategies": {
+    "hedge": {
+      "trade_count": 1,
+      "resolved": 1,
+      "win_rate": 1.0,
+      "avg_pnl": 26.49457578136583,
+      "total_pnl": 26.49457578136583,
+      "sharpe": 0.0,
+      "max_drawdown": 0.0,
+      "abstain_rate": 0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 1.0,
+          "sharpe": 0.0,
+          "pnl": 26.49457578136583,
+          "trades": 1
+        }
+      },
+      "degradation": "variance"
+    },
+    "fair_value_directional": {
+      "trade_count": 47,
+      "resolved": 28,
+      "win_rate": 0.17857142857142858,
+      "avg_pnl": 63.36165817083039,
+      "total_pnl": 1774.126428783251,
+      "sharpe": 2.575181904111495,
+      "max_drawdown": 913.3777759929485,
+      "abstain_rate": 0.0006793478260869565,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.17857142857142858,
+          "sharpe": 2.575181904111495,
+          "pnl": 1774.126428783251,
+          "trades": 47
+        }
+      },
+      "degradation": "variance"
+    },
+    "bracket_neighbor": {
+      "trade_count": 16,
+      "resolved": 0,
+      "win_rate": 0,
+      "avg_pnl": 0,
+      "total_pnl": 0,
+      "sharpe": 0.0,
+      "max_drawdown": 0.0,
+      "abstain_rate": 0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0,
+          "sharpe": 0.0,
+          "pnl": 0,
+          "trades": 16
+        }
+      },
+      "degradation": "variance"
+    },
+    "closing_convergence": {
+      "trade_count": 15,
+      "resolved": 0,
+      "win_rate": 0,
+      "avg_pnl": 0,
+      "total_pnl": 0,
+      "sharpe": 0.0,
+      "max_drawdown": 0.0,
+      "abstain_rate": 0.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0,
+          "sharpe": 0.0,
+          "pnl": 0,
+          "trades": 15
+        }
+      },
+      "degradation": "variance"
+    }
+  },
+  "regime_performance": {
+    "calm": {
+      "trades": 79,
+      "pnl": 1800.6210045646171
+    }
+  },
+  "drift_flags": {},
+  "degradation_flags": {},
+  "missed_opportunities": [
+    {
+      "market_id": "KXBTC-26MAR2507-B74950",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74850",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74750",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74650",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74450",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74350",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B74250",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B73950",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B73750",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    },
+    {
+      "market_id": "KXBTC-26MAR2507-B73650",
+      "price_move": 0.95,
+      "title": "Bitcoin price range  on Mar 25, 2026?"
+    }
+  ],
+  "calibration": {
+    "total": 416,
+    "correct": 62,
+    "avg_confidence": 0.7726231565244319,
+    "actual_win_rate": 0.14903846153846154,
+    "overconfidence": 0.6235846949859704
+  },
+  "abstain_breakdown": {
+    "no strategy triggered": 42154,
+    "policy_block": 1307,
+    "confidence_below_threshold": 12441,
+    "position_limit_reached": 3817,
+    "exposure_cap": 1
+  }
+}

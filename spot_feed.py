@@ -39,6 +39,11 @@ def get_spot_prices() -> dict:
         return _cache
     except Exception as e:
         print(f"[rivalclaw/spot] CoinGecko error: {e}")
+        try:
+            import event_logger as elog
+            elog.error("spot_feed", type(e).__name__, str(e))
+        except Exception:
+            pass
         return _cache  # Return stale cache on error
 
 

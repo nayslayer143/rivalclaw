@@ -171,6 +171,11 @@ def _call_kalshi(method, path, params=None):
         return resp.json()
     except Exception as e:
         print(f"[rivalclaw/kalshi] API error: {e}")
+        try:
+            import event_logger as elog
+            elog.error("kalshi_feed", type(e).__name__, str(e))
+        except Exception:
+            pass
         return None
 
 
