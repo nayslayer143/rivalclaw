@@ -2,6 +2,7 @@
 """RivalClaw CLI — entry point for cron and manual runs."""
 import os
 import sys
+import fcntl
 import argparse
 from pathlib import Path
 
@@ -29,7 +30,23 @@ if __name__ == "__main__":
     if args.migrate:
         simulator.migrate()
     elif args.run:
-        simulator.run_loop()
+        # Acquire exclusive file lock to prevent concurrent cycles (P0-001 Fix 1).
+        # When cron fires every minute but a cycle takes >1 min, overlapping
+        # processes stack and cascade. flock(LOCK_EX | LOCK_NB) makes the second
+        # invocation fail immediately instead of waiting.
+        lock_path = Path(__file__).parent / ".rivalclaw-run.lock"
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("[rivalclaw] Another run_loop is already running — exiting.")
+            lock_fd.close()
+            sys.exit(0)
+        try:
+            simulator.run_loop()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
     elif args.tune:
         import self_tuner
         self_tuner.run_tuning()
