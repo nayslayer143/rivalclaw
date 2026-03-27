@@ -184,8 +184,15 @@ def _simulate_execution(entry_price, amount_usd, shares, direction, venue="polym
     return adjusted_price, adjusted_amount, adjusted_shares, sim_metadata
 
 
-def execute_trade(decision, cycle_started_at_ms=0.0):
-    """Execute a paper trade with execution simulation. Frozen Mirofish semantics."""
+def execute_trade(decision, cycle_started_at_ms=0.0, cached_state=None):
+    """Execute a paper trade with execution simulation. Frozen Mirofish semantics.
+
+    P0-001 Fix 3: Accept optional cached_state to avoid calling get_state()
+    per trade. get_state() does SUM(pnl) over all rows — at 12K+ rows and
+    17 trades/cycle, that's 17 full table scans (~418s). With cached_state
+    the caller computes state once and passes it, updating the balance
+    incrementally after each trade.
+    """
     # Circuit breaker: reject trades if trading is halted
     conn_check = _get_conn()
     try:
@@ -198,7 +205,7 @@ def execute_trade(decision, cycle_started_at_ms=0.0):
     finally:
         conn_check.close()
 
-    state = get_state()
+    state = cached_state if cached_state is not None else get_state()
     pct_cap = state["balance"] * MAX_POSITION_PCT
     cap = min(pct_cap, MAX_TRADE_USD)  # Hard ceiling prevents paper-trading fantasy
     if decision.amount_usd > cap:

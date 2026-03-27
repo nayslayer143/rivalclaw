@@ -309,12 +309,19 @@ def run_loop():
                 features={"scores": scores, "blocked": blocked})
 
     # 4. Execute trades (timed)
+    # P0-001 Fix 3: Pre-compute wallet state once instead of per-trade.
+    # paper_wallet.get_state() does SUM(pnl) over all rows — at 12K+ rows
+    # and ~17 trades/cycle, calling it per trade cost ~418s. Now we compute
+    # once and update the cached balance incrementally after each trade.
     t0 = time.time()
     open_ids = wallet.get_open_market_ids()
     trades_executed = 0
     opportunities_qualified = 0
     # Stable cycle_id derived from cycle start time
     cycle_id = str(int(cycle_started_at_ms))[:12]
+    # Snapshot wallet state once for the entire trade loop (legacy path only)
+    if not USE_PROTOCOL:
+        trade_state = wallet.get_state()
     for d in decisions:
         if d.market_id in open_ids:
             continue
@@ -324,10 +331,20 @@ def run_loop():
                 d, cycle_started_at_ms=cycle_started_at_ms, cycle_id=cycle_id
             )
         else:
-            result = wallet.execute_trade(d, cycle_started_at_ms=cycle_started_at_ms)
+            result = wallet.execute_trade(
+                d, cycle_started_at_ms=cycle_started_at_ms,
+                cached_state=trade_state,
+            )
         if result:
             open_ids.add(d.market_id)
             trades_executed += 1
+            # Update cached balance: opening a new position doesn't change
+            # realized PnL, but the notional is "committed". For cap checking,
+            # reduce balance by the trade amount so subsequent trades see a
+            # lower available balance (conservative — prevents over-allocation).
+            if not USE_PROTOCOL:
+                trade_state["balance"] -= result["amount_usd"]
+                trade_state["open_positions"] += 1
             print(f"[rivalclaw] Executed: {d.direction} ${result['amount_usd']:.0f} "
                   f"on '{d.question[:50]}' [{d.strategy}]")
         else:
