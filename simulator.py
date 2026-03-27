@@ -395,7 +395,12 @@ def run_loop():
 
 
 def _resolve_kalshi_trades():
-    """Check Kalshi API for resolution results on open Kalshi trades."""
+    """Check Kalshi API for resolution results on open Kalshi trades.
+
+    P0-001 Fix 2: Instead of one HTTP call per open trade (O(n)), group trades
+    by event_ticker and fetch all markets for each event in a single call.
+    Reduces 106 sequential HTTP calls to ~5-10 calls (one per unique event).
+    """
     try:
         import kalshi_feed
     except ImportError:
@@ -405,11 +410,17 @@ def _resolve_kalshi_trades():
     now = datetime.datetime.utcnow()
 
     try:
+        # Join with kalshi_extra to get event_ticker for batching
         open_trades = conn.execute("""
-            SELECT id, market_id, direction, entry_price, shares, amount_usd,
-                   entry_fee, venue
-            FROM paper_trades
-            WHERE status = 'open' AND (market_id LIKE 'KX%' OR venue = 'kalshi')
+            SELECT pt.id, pt.market_id, pt.direction, pt.entry_price, pt.shares,
+                   pt.amount_usd, pt.entry_fee, pt.venue,
+                   ke.event_ticker
+            FROM paper_trades pt
+            LEFT JOIN (
+                SELECT market_id, event_ticker, MAX(fetched_at) AS latest
+                FROM kalshi_extra GROUP BY market_id
+            ) ke ON pt.market_id = ke.market_id
+            WHERE pt.status = 'open' AND (pt.market_id LIKE 'KX%' OR pt.venue = 'kalshi')
         """).fetchall()
     except sqlite3.OperationalError:
         conn.close()
@@ -419,13 +430,46 @@ def _resolve_kalshi_trades():
         conn.close()
         return
 
-    closed_count = 0
+    # Group trades by event_ticker for batch resolution
+    from collections import defaultdict
+    by_event = defaultdict(list)
+    no_event = []  # trades with no known event_ticker — fall back to per-market
     for t in open_trades:
+        evt = t["event_ticker"] if t["event_ticker"] else None
+        if evt:
+            by_event[evt].append(t)
+        else:
+            no_event.append(t)
+
+    # Build a market_id -> result map from batch API calls
+    resolved_markets = {}  # market_id -> result string ("yes" / "no")
+
+    for evt_ticker, trades in by_event.items():
+        data = kalshi_feed._call_kalshi("GET", "/markets", params={
+            "event_ticker": evt_ticker, "limit": 200,
+        })
+        if not data:
+            continue
+        for m in data.get("markets", []):
+            ticker = m.get("ticker", "")
+            result = m.get("result", "")
+            if ticker and result:
+                resolved_markets[ticker] = result
+
+    # Fallback: per-market call for trades without event_ticker
+    for t in no_event:
         data = kalshi_feed._call_kalshi("GET", f"/markets/{t['market_id']}")
         if not data:
             continue
         m = data.get("market", data)
         result = m.get("result", "")
+        if result:
+            resolved_markets[t["market_id"]] = result
+
+    # Apply resolutions to trades
+    closed_count = 0
+    for t in open_trades:
+        result = resolved_markets.get(t["market_id"])
         if not result:
             continue
 
@@ -459,10 +503,17 @@ def _resolve_kalshi_trades():
     if closed_count:
         conn.commit()
     conn.close()
+    print(f"[rivalclaw] Kalshi resolution: {len(by_event)} event batches + "
+          f"{len(no_event)} fallback calls (was {len(open_trades)} per-trade calls)")
 
 
 def _resolve_polymarket_trades():
-    """Check Polymarket gamma API for resolution on open Polymarket trades."""
+    """Check Polymarket gamma API for resolution on open Polymarket trades.
+
+    P0-001 Fix 2: Instead of one HTTP call per unique market_id, batch market
+    IDs into chunks and use the gamma API list endpoint with id__in filter.
+    Reduces ~10+ sequential HTTP calls to 1-2 batched calls.
+    """
     conn = _get_conn()
     now = datetime.datetime.utcnow()
 
@@ -482,43 +533,54 @@ def _resolve_polymarket_trades():
         conn.close()
         return
 
-    # Group by market_id to avoid duplicate API calls
+    # Group by market_id to deduplicate
     market_ids = list(set(t["market_id"] for t in open_trades))
     resolutions = {}
+    api_calls = 0
 
-    for mid in market_ids:
+    # Batch fetch: gamma API supports comma-separated condition_id or slug list
+    # Use chunks of 50 to stay within URL length limits
+    BATCH_SIZE = 50
+    for i in range(0, len(market_ids), BATCH_SIZE):
+        batch = market_ids[i:i + BATCH_SIZE]
         try:
             resp = requests.get(
-                f"https://gamma-api.polymarket.com/markets/{mid}",
-                timeout=10,
+                "https://gamma-api.polymarket.com/markets",
+                params={"id": ",".join(batch), "closed": "true"},
+                timeout=30,
             )
+            api_calls += 1
             if resp.status_code != 200:
-                continue
-            data = resp.json()
-            if isinstance(data, list):
-                data = data[0] if data else {}
-            is_resolved = data.get("resolved", False) or data.get("closed", False)
-            if is_resolved:
-                outcome_prices = data.get("outcomePrices", [])
-                outcomes = data.get("outcomes", [])
-                winning_outcome = None
-                if outcome_prices and outcomes:
-                    for label, price_str in zip(outcomes, outcome_prices):
-                        try:
-                            price = float(price_str)
-                        except (ValueError, TypeError):
+                # Fallback: try individual calls for this batch
+                for mid in batch:
+                    try:
+                        resp2 = requests.get(
+                            f"https://gamma-api.polymarket.com/markets/{mid}",
+                            timeout=10,
+                        )
+                        api_calls += 1
+                        if resp2.status_code != 200:
                             continue
-                        if price >= 0.95:
-                            winning_outcome = label.upper()
-                            break
-                if not winning_outcome:
-                    result_str = data.get("result", "")
-                    if result_str:
-                        winning_outcome = result_str.upper()
-                resolutions[mid] = {"resolved": True, "winning_outcome": winning_outcome}
+                        data = resp2.json()
+                        if isinstance(data, list):
+                            data = data[0] if data else {}
+                        _extract_polymarket_resolution(data, resolutions)
+                    except Exception as e:
+                        print(f"[rivalclaw] Polymarket resolution fallback error for {mid[:20]}: {e}")
+                continue
+
+            data_list = resp.json()
+            if not isinstance(data_list, list):
+                data_list = [data_list] if data_list else []
+            for data in data_list:
+                _extract_polymarket_resolution(data, resolutions)
+
         except Exception as e:
-            print(f"[rivalclaw] Polymarket resolution check error for {mid[:20]}: {e}")
+            print(f"[rivalclaw] Polymarket batch resolution error: {e}")
             continue
+
+    # The batch endpoint may not return unresolved markets — that's expected.
+    # We only care about resolved ones; unresolved markets need no API call.
 
     closed_count = 0
     for t in open_trades:
@@ -560,6 +622,39 @@ def _resolve_polymarket_trades():
     if closed_count:
         conn.commit()
     conn.close()
+    print(f"[rivalclaw] Polymarket resolution: {api_calls} API calls "
+          f"for {len(market_ids)} unique markets (was {len(market_ids)} per-market calls)")
+
+
+def _extract_polymarket_resolution(data, resolutions):
+    """Extract resolution info from a single Polymarket market response dict."""
+    if not data or not isinstance(data, dict):
+        return
+    mid = data.get("id") or data.get("condition_id") or data.get("questionID", "")
+    if not mid:
+        return
+
+    is_resolved = data.get("resolved", False) or data.get("closed", False)
+    if not is_resolved:
+        return
+
+    outcome_prices = data.get("outcomePrices", [])
+    outcomes = data.get("outcomes", [])
+    winning_outcome = None
+    if outcome_prices and outcomes:
+        for label, price_str in zip(outcomes, outcome_prices):
+            try:
+                price = float(price_str)
+            except (ValueError, TypeError):
+                continue
+            if price >= 0.95:
+                winning_outcome = label.upper()
+                break
+    if not winning_outcome:
+        result_str = data.get("result", "")
+        if result_str:
+            winning_outcome = result_str.upper()
+    resolutions[mid] = {"resolved": True, "winning_outcome": winning_outcome}
 
 
 def _run_shadow(candidates, markets, state, spot_prices, elog):
