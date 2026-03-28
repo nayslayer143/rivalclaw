@@ -2059,18 +2059,17 @@ def _load_spot_history(lookback_minutes=10):
 def analyze(markets: list[dict], wallet: dict[str, Any],
             spot_prices: dict | None = None) -> list[TradeDecision]:
     """
-    Run strategies. One signal per event_ticker max (prevent bracket spam).
+    Run strategies. Up to MAX_TRADES_PER_EVENT signals per event_ticker.
     Pairs primary trades with hedge legs for defined-risk spreads.
 
-    Active strategies (ordered by edge quality):
-      1. arbitrage (pure arb, guaranteed)
-      2. fair_value_directional (proven winner: 50% WR, 2.7x ratio)
-      3. spot_momentum (NEW: ride crypto trends into lagging contracts)
-      4. vol_skew (realized > implied vol)
-      5. time_decay (proven: 5.1x ratio)
-      6. mean_reversion (testing: 1.7x ratio)
+    Active strategies:
+      Event-level: cross_strike_arb, bracket_cone, bracket_neighbor (disabled), pairs_trade (disabled), election_field_arb
+      Per-market: arbitrage, fair_value_directional, spot_momentum, vol_skew, time_decay,
+                  mean_reversion, expiry_acceleration, closing_convergence, correlation_echo,
+                  polymarket_convergence, liquidity_fade, volume_confirmed, wipeout_reversal,
+                  multi_timeframe, vol_regime, correlation_cascade, forecast_delta
 
-    Killed: near_expiry_momentum (0.2x ratio, -$691, 48 trades)
+    Killed: near_expiry_momentum (0.2x ratio, -$691), bracket_neighbor (0% WR), pairs_trade (13% WR), hedge (0% WR)
     """
     balance = wallet.get("balance", 1000.0)
     spot = spot_prices or {}
@@ -2094,6 +2093,18 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             decisions.append(d)
             event_trade_count[evt] += 1
             stats["cross_strike_arb"] += 1
+
+    # Bracket cone (3 brackets closest to spot — spreads the hit zone)
+    for evt, group in event_groups.items():
+        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+            continue
+        cones = _check_bracket_cone(group, balance, spot)
+        for d in cones:
+            decisions.append(d)
+            event_trade_count[evt] += 1
+            stats["bracket_cone"] += 1
+            if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+                break
 
     # Bracket neighbor mispricing (runs on event groups)
     if "bracket_neighbor" not in DISABLED_STRATEGIES:
