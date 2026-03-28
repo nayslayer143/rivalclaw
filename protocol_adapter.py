@@ -17,7 +17,10 @@ from openclaw_protocol import ProtocolEngine, ProtocolConfig, InMemoryEventStore
 from openclaw_protocol.store.sqlite import SqliteEventStore
 from openclaw_protocol.config.defaults import DEFAULT_PROTOCOL_CONFIG
 from openclaw_protocol.lock import FileExecutionLock
-from openclaw_protocol.helpers import build_synthetic_book, build_synthetic_market
+from openclaw_protocol.helpers import build_synthetic_book, build_synthetic_market, LiquidityProfile
+
+# Zero-spread profile: asks are priced AT mid price so paper fills always succeed
+_PAPER_PROFILE = LiquidityProfile(base_depth=1000, depth_decay=0.9, num_levels=8, spread_bps=0)
 from openclaw_protocol.schemas.trade_intent import TradeIntent
 from openclaw_protocol.schemas.base import ExecutionStatus, ExitReason
 from openclaw_protocol.commands import CommandLog, ProtocolCommand
@@ -182,6 +185,7 @@ def execute_trade(decision, cycle_started_at_ms: float, cycle_id: str | None = N
         contract_id=market_id,
         venue=venue,
         price=entry_price,
+        profile=_PAPER_PROFILE,
         fetched_at_ms=now_ms,
     )
     question = (
@@ -345,6 +349,14 @@ def get_state() -> dict:
 # ---------------------------------------------------------------------------
 # Task 1B — shutdown
 # ---------------------------------------------------------------------------
+
+def get_open_market_ids() -> set:
+    """Return set of market_ids with open protocol positions (for open_ids gating)."""
+    if _engine is None:
+        return set()
+    positions = _engine.get_positions(BOT_ID)
+    return {p.contract_id for p in positions}
+
 
 def shutdown() -> None:
     """Clean shutdown — release lock, clear module state."""

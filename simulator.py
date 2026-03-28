@@ -310,7 +310,11 @@ def run_loop():
 
     # 4. Execute trades (timed)
     t0 = time.time()
-    open_ids = wallet.get_open_market_ids()
+    # When using protocol, read open positions from protocol engine (not paper_trades)
+    if USE_PROTOCOL:
+        open_ids = protocol_adapter.get_open_market_ids()
+    else:
+        open_ids = wallet.get_open_market_ids()
     trades_executed = 0
     opportunities_qualified = 0
     # Stable cycle_id derived from cycle start time
@@ -323,6 +327,9 @@ def run_loop():
             result = protocol_adapter.execute_trade(
                 d, cycle_started_at_ms=cycle_started_at_ms, cycle_id=cycle_id
             )
+            # Bridge: write to paper_trades so resolution + reporting work
+            if result:
+                _bridge_write_paper_trade(d, result, cycle_started_at_ms)
         else:
             result = wallet.execute_trade(d, cycle_started_at_ms=cycle_started_at_ms)
         if result:
@@ -601,6 +608,47 @@ def _run_shadow(candidates, markets, state, spot_prices, elog):
 
         if shadow_trades > 0:
             print(f"[rivalclaw/shadow] {cid}: {shadow_trades} shadow trades logged")
+
+
+def _bridge_write_paper_trade(decision, result, cycle_started_at_ms):
+    """Write a protocol-executed trade to paper_trades for resolution/reporting compatibility."""
+    now = datetime.datetime.utcnow().isoformat()
+    conn = _get_conn()
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO paper_trades
+            (market_id, question, direction, shares, entry_price,
+             amount_usd, status, confidence, reasoning, strategy,
+             opened_at, experiment_id, instance_id,
+             cycle_started_at_ms, decision_generated_at_ms, trade_executed_at_ms,
+             venue, expected_edge, entry_fee)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            decision.market_id,
+            decision.question,
+            decision.direction,
+            result.get("shares", 0),
+            result.get("entry_price", decision.entry_price),
+            result.get("amount_usd", decision.amount_usd),
+            "open",
+            decision.confidence,
+            decision.reasoning,
+            decision.strategy,
+            now,
+            EXPERIMENT_ID,
+            INSTANCE_ID,
+            cycle_started_at_ms,
+            getattr(decision, "decision_generated_at_ms", 0),
+            int(datetime.datetime.utcnow().timestamp() * 1000),
+            getattr(decision, "venue", "polymarket"),
+            (decision.metadata or {}).get("edge", 0),
+            result.get("execution_sim", {}).get("fees_entry", 0),
+        ))
+        conn.commit()
+    except Exception as e:
+        print(f"[rivalclaw] Bridge write failed: {e}")
+    finally:
+        conn.close()
 
 
 def _log_cycle_metrics(started_at, markets, detected, qualified, executed,

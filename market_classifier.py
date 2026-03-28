@@ -121,14 +121,32 @@ def market_priority(market: dict) -> float:
     return (speed * 2) + (clarity * 2) + decay
 
 
+MAX_EXPIRY_HOURS = float(os.environ.get("RIVALCLAW_MAX_EXPIRY_HOURS", "24"))
+
+
+def _within_expiry(market: dict) -> bool:
+    """Return True if market closes within MAX_EXPIRY_HOURS from now."""
+    end = market.get("end_date") or market.get("close_time")
+    if not end:
+        return False  # No expiry info → reject (can't confirm fast resolution)
+    try:
+        close = datetime.datetime.fromisoformat(end.replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        hours = (close - now).total_seconds() / 3600
+        return 0 < hours <= MAX_EXPIRY_HOURS
+    except (ValueError, TypeError):
+        return False
+
+
 def classify_and_filter(markets: list[dict]) -> list[dict]:
     """
-    Score all markets, store scores in DB, return only those above MIN_PRIORITY.
-    Sorted by priority descending.
+    Score all markets, store scores in DB, return only those above MIN_PRIORITY
+    that resolve within MAX_EXPIRY_HOURS. Sorted by priority descending.
     """
     now = datetime.datetime.utcnow().isoformat()
     scored = []
     skipped = 0
+    expiry_rejected = 0
 
     conn = sqlite3.connect(str(DB_PATH))
     conn.execute("PRAGMA journal_mode=WAL")
@@ -171,6 +189,10 @@ def classify_and_filter(markets: list[dict]) -> list[dict]:
         m["priority_score"] = priority
         m["speed_category"] = cat
 
+        if not _within_expiry(m):
+            expiry_rejected += 1
+            continue
+
         if priority >= MIN_PRIORITY:
             scored.append(m)
         else:
@@ -180,5 +202,6 @@ def classify_and_filter(markets: list[dict]) -> list[dict]:
     conn.close()
 
     scored.sort(key=lambda m: m.get("priority_score", 0), reverse=True)
-    print(f"[rivalclaw/classify] {len(scored)} markets pass (>={MIN_PRIORITY}), {skipped} filtered out")
+    print(f"[rivalclaw/classify] {len(scored)} markets pass (>={MIN_PRIORITY}, ≤{MAX_EXPIRY_HOURS}h), "
+          f"{skipped} low-priority, {expiry_rejected} beyond-24hr filtered")
     return scored
