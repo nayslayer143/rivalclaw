@@ -32,6 +32,11 @@ import event_logger as elog
 # Constants
 # ---------------------------------------------------------------------------
 
+# Strategies disabled based on live performance data (0% WR / negative edge)
+DISABLED_STRATEGIES = set(
+    os.environ.get("RIVALCLAW_DISABLED_STRATEGIES", "bracket_neighbor,hedge,pairs_trade").split(",")
+)
+
 POLYMARKET_FEE_RATE = float(os.environ.get("ARB_FEE_RATE", "0.02"))
 MIN_EDGE = float(os.environ.get("ARB_MIN_EDGE", "0.005"))
 MAX_POSITION_PCT = float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.10"))
@@ -2091,24 +2096,26 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             stats["cross_strike_arb"] += 1
 
     # Bracket neighbor mispricing (runs on event groups)
-    for evt, group in event_groups.items():
-        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
-            continue
-        neighbors = _check_bracket_neighbor(group, balance, spot)
-        for d in neighbors:
-            decisions.append(d)
-            event_trade_count[evt] += 1
-            stats["bracket_neighbor"] += 1
+    if "bracket_neighbor" not in DISABLED_STRATEGIES:
+        for evt, group in event_groups.items():
+            if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+                continue
+            neighbors = _check_bracket_neighbor(group, balance, spot)
+            for d in neighbors:
+                decisions.append(d)
+                event_trade_count[evt] += 1
+                stats["bracket_neighbor"] += 1
 
     # Pairs trading (runs on event groups)
-    for evt, group in event_groups.items():
-        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
-            continue
-        pairs = _check_pairs_trade(group, balance, spot)
-        for d in pairs:
-            decisions.append(d)
-            event_trade_count[evt] += 1
-            stats["pairs_trade"] += 1
+    if "pairs_trade" not in DISABLED_STRATEGIES:
+        for evt, group in event_groups.items():
+            if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+                continue
+            pairs = _check_pairs_trade(group, balance, spot)
+            for d in pairs:
+                decisions.append(d)
+                event_trade_count[evt] += 1
+                stats["pairs_trade"] += 1
 
     # Election field arb (runs on all Polymarket markets)
     field_trades = _check_election_field(markets, balance)
@@ -2270,10 +2277,11 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     hedged = []
     for d in decisions:
         hedged.append(d)
-        hedge = _find_hedge(d, event_groups, balance)
-        if hedge:
-            hedged.append(hedge)
-            stats["hedge"] += 1
+        if "hedge" not in DISABLED_STRATEGIES:
+            hedge = _find_hedge(d, event_groups, balance)
+            if hedge:
+                hedged.append(hedge)
+                stats["hedge"] += 1
 
     if stats["integrity"]:
         print(f"[rivalclaw/brain] Integrity rejected: {stats['integrity']}")

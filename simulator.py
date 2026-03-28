@@ -222,9 +222,10 @@ def run_loop():
     finally:
         conn.close()
 
-    # 1. Fetch market data from both venues (timed)
+    # 1. Fetch market data — Kalshi only (Polymarket disabled: no signals generated there)
+    ENABLED_VENUES = set(os.environ.get("RIVALCLAW_VENUES", "kalshi").split(","))
     t0 = time.time()
-    poly_markets = poly_feed.fetch_markets()
+    poly_markets = poly_feed.fetch_markets() if "polymarket" in ENABLED_VENUES else []
     kalshi_markets = kalshi_feed.fetch_markets()
     markets = poly_markets + kalshi_markets
     fetch_ms = (time.time() - t0) * 1000
@@ -472,6 +473,12 @@ def _resolve_kalshi_trades():
         sign = "+" if pnl >= 0 else ""
         print(f"[rivalclaw] Kalshi resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
         closed_count += 1
+        # Credit protocol wallet so balance stays in sync
+        if USE_PROTOCOL:
+            try:
+                protocol_adapter.credit_resolution(t["market_id"], pnl, exit_price)
+            except Exception:
+                pass
 
     if closed_count:
         conn.commit()
@@ -573,6 +580,12 @@ def _resolve_polymarket_trades():
         sign = "+" if pnl >= 0 else ""
         print(f"[rivalclaw] Polymarket resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
         closed_count += 1
+        # Credit protocol wallet so balance stays in sync
+        if USE_PROTOCOL:
+            try:
+                protocol_adapter.credit_resolution(t["market_id"], pnl, exit_price)
+            except Exception:
+                pass
 
     if closed_count:
         conn.commit()

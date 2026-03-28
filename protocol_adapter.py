@@ -358,6 +358,40 @@ def get_open_market_ids() -> set:
     return {p.contract_id for p in positions}
 
 
+def credit_resolution(market_id: str, pnl_net: float, exit_price: float) -> None:
+    """Credit the protocol wallet when a trade resolves in paper_trades.
+
+    For wins: credits back stake + profit.
+    For losses: position is already debited; just close it in protocol state.
+    This keeps protocol balance in sync with paper_trades outcomes.
+    """
+    if _engine is None:
+        return
+    try:
+        positions = {p.contract_id: p for p in _engine.get_positions(BOT_ID)}
+        pos = positions.get(market_id)
+        if pos is None:
+            # Position not in protocol (bridge gap) — just credit the net pnl directly
+            if pnl_net > 0:
+                _engine._wallet_mgr.credit(BOT_ID, pnl_net, "resolution_credit", market_id)
+            return
+        from openclaw_protocol.schemas.base import ExitReason
+        from openclaw_protocol.helpers import build_synthetic_book
+        now_ms = int(time.time() * 1000)
+        exit_book = build_synthetic_book(
+            contract_id=market_id,
+            venue=pos.venue,
+            price=exit_price,
+            profile=_PAPER_PROFILE,
+            fetched_at_ms=now_ms,
+        )
+        reason = ExitReason.TAKE_PROFIT if pnl_net >= 0 else ExitReason.STOP_LOSS
+        _engine.execute_exit(BOT_ID, market_id, exit_price, reason, exit_book)
+        logger.info(f"Protocol credited resolution: {market_id} pnl={pnl_net:.2f}")
+    except Exception as e:
+        logger.warning(f"Protocol credit_resolution failed for {market_id}: {e}")
+
+
 def shutdown() -> None:
     """Clean shutdown — release lock, clear module state."""
     global _engine, _command_log, _observability, _rollout, _lock, _lock_key
