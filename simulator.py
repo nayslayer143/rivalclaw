@@ -413,7 +413,7 @@ def _resolve_kalshi_trades():
 
     try:
         open_trades = conn.execute("""
-            SELECT id, market_id, direction, entry_price, shares, amount_usd,
+            SELECT rowid, market_id, direction, entry_price, shares, amount_usd,
                    entry_fee, venue
             FROM paper_trades
             WHERE status = 'open' AND (market_id LIKE 'KX%' OR venue = 'kalshi')
@@ -425,6 +425,15 @@ def _resolve_kalshi_trades():
     if not open_trades:
         conn.close()
         return
+
+    # Deduplicate: only resolve each market_id once (take first occurrence)
+    seen = set()
+    deduped = []
+    for t in open_trades:
+        if t["market_id"] not in seen:
+            seen.add(t["market_id"])
+            deduped.append(t)
+    open_trades = deduped
 
     closed_count = 0
     for t in open_trades:
@@ -451,13 +460,14 @@ def _resolve_kalshi_trades():
         pnl = raw_pnl - entry_fee
         status = "closed_win" if we_won else "closed_loss"
 
+        # Use rowid for update (id column is INT not INTEGER PRIMARY KEY)
         conn.execute("""
             UPDATE paper_trades
             SET exit_price=?, pnl=?, status=?, closed_at=?,
                 binary_outcome=?, resolved_price=?, resolution_source=?
-            WHERE id=?
+            WHERE market_id=? AND status='open'
         """, (exit_price, pnl, status, now.isoformat(),
-              binary_outcome, exit_price, "kalshi_api", t["id"]))
+              binary_outcome, exit_price, "kalshi_api", t["market_id"]))
 
         sign = "+" if pnl >= 0 else ""
         print(f"[rivalclaw] Kalshi resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
@@ -556,9 +566,9 @@ def _resolve_polymarket_trades():
             UPDATE paper_trades
             SET exit_price=?, pnl=?, status=?, closed_at=?,
                 binary_outcome=?, resolved_price=?, resolution_source=?
-            WHERE id=?
+            WHERE market_id=? AND status='open'
         """, (exit_price, pnl, status, now.isoformat(),
-              binary_outcome, exit_price, "polymarket_api", t["id"]))
+              binary_outcome, exit_price, "polymarket_api", t["market_id"]))
 
         sign = "+" if pnl >= 0 else ""
         print(f"[rivalclaw] Polymarket resolved: {t['market_id'][:30]} -> {status} {sign}${pnl:.2f}")
@@ -613,10 +623,20 @@ def _run_shadow(candidates, markets, state, spot_prices, elog):
 def _bridge_write_paper_trade(decision, result, cycle_started_at_ms):
     """Write a protocol-executed trade to paper_trades for resolution/reporting compatibility."""
     now = datetime.datetime.utcnow().isoformat()
+    market_id = decision.market_id
+    # Detect venue from market_id prefix (Kalshi IDs start with KX)
+    venue = "kalshi" if market_id.startswith("KX") else getattr(decision, "venue", "polymarket")
     conn = _get_conn()
     try:
+        # Skip if this market_id already has an open position (prevent duplicates)
+        existing = conn.execute(
+            "SELECT 1 FROM paper_trades WHERE market_id=? AND status='open' LIMIT 1",
+            (market_id,)
+        ).fetchone()
+        if existing:
+            return
         conn.execute("""
-            INSERT OR IGNORE INTO paper_trades
+            INSERT INTO paper_trades
             (market_id, question, direction, shares, entry_price,
              amount_usd, status, confidence, reasoning, strategy,
              opened_at, experiment_id, instance_id,
@@ -624,7 +644,7 @@ def _bridge_write_paper_trade(decision, result, cycle_started_at_ms):
              venue, expected_edge, entry_fee)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            decision.market_id,
+            market_id,
             decision.question,
             decision.direction,
             result.get("shares", 0),
@@ -640,7 +660,7 @@ def _bridge_write_paper_trade(decision, result, cycle_started_at_ms):
             cycle_started_at_ms,
             getattr(decision, "decision_generated_at_ms", 0),
             int(datetime.datetime.utcnow().timestamp() * 1000),
-            getattr(decision, "venue", "polymarket"),
+            venue,
             (decision.metadata or {}).get("edge", 0),
             result.get("execution_sim", {}).get("fees_entry", 0),
         ))
