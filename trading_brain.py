@@ -965,37 +965,47 @@ def _solve_implied_vol(spot, strike, minutes, target_price, strike_type, tol=0.0
 def _check_closing_convergence(market, balance):
     """
     Near expiry (<2h), prices should converge toward 0 or 1.
-    If YES is 0.85 with 1h left, it should be heading toward 1.0.
+    If YES is 0.83 with 1h left, it should be heading toward 1.0.
     Buy the dominant side — momentum toward resolution.
+
+    Kelly fix: at entry=0.80 payoff is 4:1 loss ratio, requiring >80% WR to be EV+.
+    Historical WR is ~69%, so we tighten the entry range to 0.78-0.87 (avoids
+    the worst asymmetry) and cap position size at 0.5% of balance.
     """
     minutes = _parse_expiry_minutes(market)
     if minutes is None or minutes <= 2 or minutes > 120:
         return None
     yes_price = market.get("yes_price", 0) or 0
-    if yes_price <= 0.05 or yes_price >= 0.95:
-        return None
     venue = market.get("venue", "polymarket")
     fee = _venue_fee(yes_price, venue)
     hours = minutes / 60.0
-    # Convergence strength: closer to expiry + more extreme price = stronger
-    if yes_price >= 0.75:
+
+    # Tightened entry range: 0.78-0.87 for YES, 0.13-0.22 for NO
+    # Below 0.78: payoff ratio (1-p)/p > 0.28 — still unfavorable without >78% WR
+    # Above 0.87: win is tiny (<$0.13/share) — not worth the capital lock
+    if yes_price >= 0.78 and yes_price <= 0.87:
         direction, entry_price = "YES", yes_price
-        # Expected convergence: price should approach 1.0
-        convergence_target = 1.0 - (1.0 - yes_price) * (hours / 2.0)  # Linear decay
+        convergence_target = 1.0 - (1.0 - yes_price) * (hours / 2.0)
         edge = convergence_target - (yes_price + fee)
-        confidence = min(convergence_target, 0.92)
-    elif yes_price <= 0.25:
+        confidence = min(convergence_target, 0.90)
+    elif yes_price >= 0.13 and yes_price <= 0.22:
         direction, entry_price = "NO", 1.0 - yes_price
         convergence_target = 1.0 - yes_price * (hours / 2.0)
         edge = convergence_target - (entry_price + _venue_fee(entry_price, venue))
-        confidence = min(convergence_target, 0.92)
+        confidence = min(convergence_target, 0.90)
     else:
         return None
-    if edge <= 0.01:
+
+    # Raised minimum edge: 0.04 (was 0.01) — require meaningful convergence gap
+    if edge <= 0.04:
         return None
-    amount = _size_for_strategy("closing_convergence", confidence, entry_price, balance, direction)
-    if amount is None:
+
+    # Hard-cap at 0.5% of balance — asymmetric payoff can't justify large sizing
+    # until win rate demonstrates genuine edge above the break-even threshold
+    amount = min(balance * 0.005, balance * MAX_POSITION_PCT)
+    if amount < 2:
         return None
+
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
