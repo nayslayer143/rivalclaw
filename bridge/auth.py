@@ -12,8 +12,8 @@ API_KEY = os.environ.get("ERS_BRIDGE_API_KEY", "ers-dev-key-change-me")
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Allow health check without auth
-        if request.url.path == "/health":
+        # Allow health check and CORS preflight without auth
+        if request.url.path == "/health" or request.method == "OPTIONS":
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:] != API_KEY:

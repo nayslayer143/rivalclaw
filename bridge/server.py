@@ -22,7 +22,7 @@ app = FastAPI(title="RivalClaw Bridge", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(
-        "ERS_CORS_ORIGINS", "https://eternalrevenueservice.com,http://localhost:3000"
+        "ERS_CORS_ORIGINS", "https://eternalrevenueservice.com,https://app.asdfghjk.lol,http://localhost:3000"
     ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
