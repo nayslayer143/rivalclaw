@@ -136,7 +136,7 @@ Common failure modes:
 
 ---
 
-## Execution Model (Paper Only)
+## Execution Model
 
 Execution simulation must include:
 - Slippage (~50 bps baseline)
@@ -351,13 +351,15 @@ Which architecture captures more real edge
 
 ## Non-Negotiable Rules
 
-- No live trading
-- No private key handling
 - No bypassing execution realism
-- No optimistic fills
+- No optimistic fills — live fills are real, paper fills stay simulated
 - No silent failures
 - No trading on ambiguous resolution
 - No degradation of metric honesty
+- Live trading requires explicit mode flag (`RIVALCLAW_EXECUTION_MODE=live`)
+- All live orders must pass pre-flight safety checks (10-point checklist)
+- Kill switch must always be functional and immediately halt all submissions
+- Max order size and exposure limits are hard-enforced, not advisory
 
 ---
 
@@ -401,7 +403,10 @@ Either result is valuable.
 ├── daily/                 <- daily performance reports
 ├── rivalclaw.db           <- SQLite DB (paper_trades, daily_pnl, cycle_metrics, market_data, context)
 ├── rivalclaw.log          <- cron output log
-└── venv/                  <- isolated Python environment
+├── venv/                  <- isolated Python environment
+├── kalshi_executor.py     <- Kalshi order submission, polling, account sync
+├── execution_router.py    <- pre-flight safety checks, shadow/live routing
+└── tests/                 <- unit tests
 ```
 
 ## DB Tables
