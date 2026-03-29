@@ -145,6 +145,51 @@ CREATE TABLE IF NOT EXISTS tuning_log (
     sample_size INTEGER NOT NULL,
     tuned_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS live_orders (
+    id INTEGER PRIMARY KEY,
+    intent_id TEXT NOT NULL,
+    client_order_id TEXT UNIQUE NOT NULL,
+    kalshi_order_id TEXT,
+    ticker TEXT NOT NULL,
+    action TEXT NOT NULL,
+    side TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    yes_price INTEGER NOT NULL,
+    order_type TEXT DEFAULT 'limit',
+    status TEXT DEFAULT 'pending',
+    fill_price INTEGER,
+    fill_count INTEGER,
+    submitted_at TEXT,
+    filled_at TEXT,
+    mode TEXT NOT NULL,
+    error_message TEXT,
+    rejection_reason TEXT,
+    cycle_id TEXT,
+    strategy TEXT,
+    market_question TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_live_orders_status ON live_orders(status);
+CREATE INDEX IF NOT EXISTS idx_live_orders_mode ON live_orders(mode);
+
+CREATE TABLE IF NOT EXISTS live_reconciliation (
+    id INTEGER PRIMARY KEY,
+    live_order_id INTEGER REFERENCES live_orders(id),
+    paper_entry_price REAL,
+    live_fill_price REAL,
+    slippage_delta_bps REAL,
+    paper_amount_usd REAL,
+    live_amount_usd REAL,
+    reconciled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS account_snapshots (
+    id INTEGER PRIMARY KEY,
+    balance_cents INTEGER,
+    portfolio_value_cents INTEGER,
+    open_positions INTEGER,
+    fetched_at TEXT
+);
 """
 
 
