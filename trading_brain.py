@@ -1913,6 +1913,191 @@ def _check_forecast_delta(market, balance):
     )
 
 
+# ---------------------------------------------------------------------------
+# Strategy 22: Expiry convergence (contracts stuck between 0.10-0.35 near expiry)
+# ---------------------------------------------------------------------------
+
+def _check_expiry_convergence(market, balance) -> TradeDecision | None:
+    """
+    Near-expiry contracts that are stuck in the "should have resolved" zone.
+    If a contract is at 0.20 with <60 min left, the market is indecisive.
+    Bet in the direction the contract is already leaning.
+
+    Derived from openclaw/scripts/mirofish/math_strategies.py scan_expiry_convergence.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes < 5 or minutes > 60:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0:
+        return None
+    if yes_price > 1:
+        yes_price /= 100.0
+
+    # In the "leaning NO" zone — bet NO
+    if 0.10 < yes_price < 0.35:
+        no_price = 1.0 - yes_price
+        edge = abs(0.5 - yes_price)  # distance from coin flip
+        fee = _kalshi_fee(no_price)
+        if edge - fee < 0.03:
+            return None
+        direction, entry_price = "NO", no_price
+        confidence = min(no_price * 0.9, 0.90)
+
+    # In the "leaning YES" zone — bet YES
+    elif 0.65 < yes_price < 0.90:
+        edge = abs(yes_price - 0.5)
+        fee = _kalshi_fee(yes_price)
+        if edge - fee < 0.03:
+            return None
+        direction, entry_price = "YES", yes_price
+        confidence = min(yes_price * 0.9, 0.90)
+
+    else:
+        return None
+
+    amount = _size_for_strategy("expiry_convergence", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"ExpiryConv: yes={yes_price:.3f} {minutes:.0f}min left edge={edge:.3f}",
+        strategy="expiry_convergence", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "minutes_left": minutes, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 23: Fade the public (high volume + price stuck at 50% → bet NO)
+# ---------------------------------------------------------------------------
+
+MIN_FADE_VOLUME = float(os.environ.get("RIVALCLAW_MIN_FADE_VOLUME", "5000"))
+
+def _check_fade_public(market, balance) -> TradeDecision | None:
+    """
+    When a high-volume market can't decide (price stuck at 40-60%),
+    bet NO. Rationale: when neither side is winning, the status quo
+    (event doesn't happen) tends to prevail.
+
+    Derived from openclaw/scripts/mirofish/hedged_strategies.py scan_fade_public.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+
+    volume = market.get("volume", 0) or market.get("volume_24h", 0) or 0
+    if volume < MIN_FADE_VOLUME:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0:
+        return None
+    if yes_price > 1:
+        yes_price /= 100.0
+
+    # Indecision zone: 40-60% with heavy volume
+    if not (0.40 < yes_price < 0.60):
+        return None
+
+    no_price = 1.0 - yes_price
+    edge = abs(0.50 - yes_price) + 0.02  # distance from coin-flip + small structural bias
+    fee = _kalshi_fee(no_price)
+    if edge - fee < 0.015:
+        return None
+
+    confidence = min(no_price, 0.62)  # conservative — contrarian bet
+    amount = _size_for_strategy("fade_public", confidence, no_price, balance, "NO")
+    if amount is None:
+        amount = balance * 0.002  # half-size fallback
+    if amount < 2:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction="NO", confidence=confidence,
+        reasoning=f"FadePublic: vol={volume:.0f} yes={yes_price:.3f} stuck≈0.50 edge={edge:.3f}",
+        strategy="fade_public", amount_usd=amount, entry_price=no_price,
+        shares=amount / no_price if no_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "volume": volume, "venue": "kalshi"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 24: Vol straddle entry (post BTC spike, buy cheaper leg)
+# ---------------------------------------------------------------------------
+
+def _check_vol_straddle(market, balance, spot_prices, spot_history) -> TradeDecision | None:
+    """
+    After a BTC spot move >0.5%, buy the cheaper leg on a 15-min altcoin contract.
+    The idea: vol clusters. A big BTC move means the next 15-min period is
+    likely to see another big move. We don't know direction — buy the cheaper side
+    to capture any big move.
+
+    Derived from openclaw/scripts/mirofish/hedged_strategies.py scan_volatility_clustering.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+    mid = market.get("market_id", "")
+    if "15M" not in mid:
+        return None
+
+    # Check BTC vol spike
+    btc_hist = spot_history.get("bitcoin", [])
+    if len(btc_hist) < 2:
+        return None
+    btc_move = abs(btc_hist[-1] - btc_hist[0]) / btc_hist[0] if btc_hist[0] > 0 else 0
+    if btc_move < 0.005:  # need >0.5% BTC move
+        return None
+
+    minutes = _parse_expiry_minutes(market)
+    if minutes is None or minutes < 5 or minutes > 20:
+        return None
+
+    yes_price = market.get("yes_price", 0) or 0
+    if yes_price <= 0:
+        return None
+    if yes_price > 1:
+        yes_price /= 100.0
+    no_price = 1.0 - yes_price
+
+    if yes_price < 0.05 or yes_price > 0.95:
+        return None
+
+    # Buy the cheaper leg — the high-vol spike makes either direction possible
+    if yes_price < no_price:
+        direction, entry_price = "YES", yes_price
+    else:
+        direction, entry_price = "NO", no_price
+
+    # Only buy if cheaper leg is genuinely cheap (under 0.40 — meaningful upside)
+    if entry_price > 0.40:
+        return None
+
+    edge = btc_move * 2  # rough edge proportional to BTC move size
+    fee = _kalshi_fee(entry_price)
+    if edge - fee < 0.005:
+        return None
+
+    confidence = min(0.55 + btc_move * 5, 0.72)
+    amount = _size_for_strategy("vol_straddle", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+    return TradeDecision(
+        market_id=market["market_id"], question=market.get("question", ""),
+        direction=direction, confidence=confidence,
+        reasoning=f"VolStraddle: BTC {btc_move:.2%} → cheaper_leg={direction} @{entry_price:.3f} {minutes:.0f}min",
+        strategy="vol_straddle", amount_usd=amount, entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={"edge": edge, "btc_move": btc_move, "venue": "kalshi"},
+    )
+
+
 HEDGE_RATIO = float(os.environ.get("RIVALCLAW_HEDGE_RATIO", "0.30"))  # Hedge = 30% of primary size
 HEDGE_STRIKE_OFFSET = float(os.environ.get("RIVALCLAW_HEDGE_OFFSET", "0.02"))  # 2% OTM for hedge
 
@@ -2067,7 +2252,8 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
       Per-market: arbitrage, fair_value_directional, spot_momentum, vol_skew, time_decay,
                   mean_reversion, expiry_acceleration, closing_convergence, correlation_echo,
                   polymarket_convergence, liquidity_fade, volume_confirmed, wipeout_reversal,
-                  multi_timeframe, vol_regime, correlation_cascade, forecast_delta
+                  multi_timeframe, vol_regime, correlation_cascade, forecast_delta,
+                  expiry_convergence, fade_public, vol_straddle
 
     Killed: near_expiry_momentum (0.2x ratio, -$691), bracket_neighbor (0% WR), pairs_trade (13% WR), hedge (0% WR)
     """
@@ -2257,6 +2443,24 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             d = _check_forecast_delta(market, balance)
             if d:
                 stats["forecast_delta"] += 1
+
+        # 18. Expiry convergence (stuck in 10-35% / 65-90% near expiry)
+        if not d:
+            d = _check_expiry_convergence(market, balance)
+            if d:
+                stats["expiry_convergence"] += 1
+
+        # 19. Fade the public (high volume + price stuck at 50%)
+        if not d:
+            d = _check_fade_public(market, balance)
+            if d:
+                stats["fade_public"] += 1
+
+        # 20. Vol straddle entry (post BTC spike, buy cheaper leg)
+        if not d:
+            d = _check_vol_straddle(market, balance, spot, spot_history)
+            if d:
+                stats["vol_straddle"] += 1
 
         if d:
             # Attach market priority score for velocity-weighted ranking
