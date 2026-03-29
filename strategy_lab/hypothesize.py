@@ -18,6 +18,11 @@ from pathlib import Path
 
 import requests
 
+try:
+    from catalog_reader import StrategyCatalog
+except ImportError:
+    StrategyCatalog = None  # type: ignore[assignment,misc]
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("STRATEGY_LAB_MODEL", "qwen3:30b")
 MAX_HYPOTHESES = int(os.environ.get("STRATEGY_LAB_MAX_HYPOTHESES", "5"))
@@ -157,11 +162,73 @@ def _validate_hypothesis(hyp: dict) -> bool:
     return all(hyp.get(k) for k in required)
 
 
+def _catalog_suggestions(diagnostics: dict) -> list[dict]:
+    """Cross-reference catalog with active strategies to find untested candidates.
+
+    Returns catalog entries for Kalshi-eligible strategies that RivalClaw
+    isn't currently running, sorted by complexity_score (lower = easier).
+    """
+    if StrategyCatalog is None:
+        return []
+    try:
+        catalog = StrategyCatalog()
+    except Exception:
+        return []
+    if catalog.count == 0:
+        return []
+
+    # Collect names/families of strategies RivalClaw is already testing
+    active_names: set[str] = set()
+    for s in diagnostics.get("strategies", []):
+        name = s.get("name", "").lower()
+        family = s.get("family", "").lower()
+        if name:
+            active_names.add(name)
+        if family:
+            active_names.add(family)
+
+    # Also pull from the strategy registry for broader coverage
+    registry = _load_registry()
+    for s in registry.get("strategies", []):
+        sid = s.get("id", "").lower()
+        fam = s.get("family", "").lower()
+        if sid:
+            active_names.add(sid)
+        if fam:
+            active_names.add(fam)
+
+    # Filter to Kalshi candidates not already active
+    candidates = []
+    for entry in catalog.kalshi_candidates():
+        entry_name = entry.get("name", "").lower()
+        entry_family = entry.get("family", "").lower()
+        entry_id = entry.get("strategy_id", "").lower()
+        # Skip if any active name overlaps with this catalog entry
+        if any(tok in entry_name or tok in entry_family or tok in entry_id
+               for tok in active_names if tok):
+            continue
+        candidates.append(entry)
+
+    # Sort by complexity_score ascending (simpler first)
+    candidates.sort(key=lambda e: e.get("complexity_score", 999))
+    return candidates
+
+
 def generate_hypotheses(diagnostic: dict) -> list[dict]:
-    """Generate bounded hypotheses from a diagnostic report."""
+    """Generate bounded hypotheses from a diagnostic report.
+
+    Each hypothesis dict may include a ``catalog_suggestions`` key with
+    untested Kalshi-eligible strategies from the openclaw-strategies catalog,
+    sorted by complexity (simplest first).
+    """
     lessons = _load_memory()
     registry = _load_registry()
     prompt = _build_prompt(diagnostic, lessons, registry)
+
+    # Gather catalog suggestions (non-blocking — empty list on failure)
+    suggestions = _catalog_suggestions(diagnostic)
+    if suggestions:
+        print(f"[strategy_lab/hypothesize] {len(suggestions)} untested catalog strategies available")
 
     # Try twice on malformed output
     for attempt in range(2):
@@ -178,6 +245,18 @@ def generate_hypotheses(diagnostic: dict) -> list[dict]:
             for i, h in enumerate(valid):
                 if not h.get("id", "").startswith("hyp-"):
                     h["id"] = f"hyp-{today}-{i + 1:03d}"
+                # Attach top catalog suggestions for reference
+                if suggestions:
+                    h["catalog_suggestions"] = [
+                        {
+                            "strategy_id": s["strategy_id"],
+                            "name": s["name"],
+                            "family": s.get("family", ""),
+                            "complexity_score": s.get("complexity_score"),
+                            "alpha_type": s.get("alpha_type", ""),
+                        }
+                        for s in suggestions[:5]
+                    ]
             print(f"[strategy_lab/hypothesize] Generated {len(valid)} hypotheses")
             return valid
         print(f"[strategy_lab/hypothesize] No valid hypotheses parsed (attempt {attempt + 1})")

@@ -30,6 +30,11 @@ from pathlib import Path
 
 import event_logger as elog
 
+try:
+    from catalog_reader import StrategyCatalog
+except ImportError:
+    StrategyCatalog = None  # type: ignore[assignment,misc]
+
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "strategy_registry.json"
 MEMORY_PATH = Path(__file__).resolve().parent / "memory.json"
 LEDGER_PATH = Path(__file__).resolve().parent.parent / "experiments" / "ledger.json"
@@ -91,6 +96,42 @@ def validate_mutation(hypothesis: dict) -> tuple[bool, str]:
             return False, f"autonomy violation: cannot modify {param}"
 
     return True, "ok"
+
+
+def get_catalog_context(strategy_name: str) -> dict | None:
+    """Look up a strategy in the openclaw-strategies catalog by name.
+
+    Returns a dict with known_failure_modes, favorable/unfavorable regimes,
+    and parameter definitions — useful context for governor decisions.
+    Returns None if the catalog is unavailable or strategy not found.
+    """
+    if StrategyCatalog is None:
+        return None
+    try:
+        catalog = StrategyCatalog()
+    except Exception:
+        return None
+    if catalog.count == 0:
+        return None
+
+    # Search by name (case-insensitive partial match)
+    matches = catalog.search(strategy_name)
+    if not matches:
+        return None
+
+    entry = matches[0]  # Best match
+    regimes = entry.get("market_regimes", {})
+    return {
+        "strategy_id": entry.get("strategy_id"),
+        "name": entry.get("name"),
+        "family": entry.get("family"),
+        "known_failure_modes": entry.get("known_failure_modes", []),
+        "favorable_regimes": regimes.get("favorable", []),
+        "unfavorable_regimes": regimes.get("unfavorable", []),
+        "parameters": entry.get("parameters", {}),
+        "complexity_score": entry.get("complexity_score"),
+        "alpha_type": entry.get("alpha_type"),
+    }
 
 
 def _load_registry() -> dict:
@@ -337,13 +378,19 @@ def evaluate_promotion(candidate_id: str) -> dict:
     all_pass = all(checks.values())
     failed = [k for k, v in checks.items() if not v]
 
-    return {
+    # Enrich with catalog context (known failure modes, regime info)
+    catalog_ctx = get_catalog_context(family) if family else None
+
+    result = {
         "verdict": "PROMOTE" if all_pass else "WAIT",
         "checks": checks,
         "failed": failed,
         "shadow_metrics": shadow,
         "baseline_metrics": baseline,
     }
+    if catalog_ctx:
+        result["catalog_context"] = catalog_ctx
+    return result
 
 
 def evaluate_demotion(strategy_id: str) -> dict:
@@ -405,12 +452,18 @@ def evaluate_demotion(strategy_id: str) -> dict:
     any_triggered = any(triggers.values())
     triggered = [k for k, v in triggers.items() if v]
 
-    return {
+    # Enrich with catalog context (failure modes help explain demotion causes)
+    catalog_ctx = get_catalog_context(family) if family else None
+
+    result = {
         "verdict": "DEMOTE" if any_triggered else "OK",
         "triggers": triggers,
         "triggered": triggered,
         "metrics": metrics,
     }
+    if catalog_ctx:
+        result["catalog_context"] = catalog_ctx
+    return result
 
 
 def promote_candidate(candidate_id: str, to_state: str = "probationary"):
