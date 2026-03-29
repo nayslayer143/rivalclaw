@@ -12,7 +12,6 @@ Env vars:
 from __future__ import annotations
 
 import datetime
-import json
 import os
 import sqlite3
 import time
@@ -342,6 +341,7 @@ def poll_order_status(
 ) -> dict:
     """Poll Kalshi for order fill status."""
     path = f"/portfolio/orders/{kalshi_order_id}"
+    last_order: dict | None = None
 
     for i in range(max_polls):
         headers = _get_kalshi_auth_headers("GET", path)
@@ -353,10 +353,10 @@ def poll_order_status(
             resp = _requests.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
             data = resp.json()
-            order = data.get("order", data)
-            status = order.get("status", "")
+            last_order = data.get("order", data)
+            status = last_order.get("status", "")
             if status in ("executed", "canceled", "cancelled"):
-                return order
+                return last_order
             if i < max_polls - 1:
                 time.sleep(interval)
         except _requests.exceptions.RequestException as e:
@@ -365,7 +365,7 @@ def poll_order_status(
                 continue
             return {"error": "request_failed", "detail": str(e)}
 
-    return data.get("order", data) if "data" in dir() else {"error": "timeout"}
+    return last_order if last_order is not None else {"error": "timeout"}
 
 
 def cancel_order(kalshi_order_id: str) -> dict:
