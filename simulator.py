@@ -238,6 +238,20 @@ def run_loop():
     if USE_PROTOCOL:
         protocol_adapter.init_engine(str(Path(__file__).parent))
 
+    # Sync Kalshi account balance for live/shadow modes
+    exec_mode = os.environ.get("RIVALCLAW_EXECUTION_MODE", "paper")
+    if exec_mode in ("live", "shadow"):
+        try:
+            import kalshi_executor
+            import execution_router
+            acct = kalshi_executor.sync_account()
+            if acct:
+                protocol_adapter.set_account_balance(acct["balance_cents"])
+            cycle_id_for_router = str(int(time.time() * 1000))[:12]
+            execution_router.reset_cycle(cycle_id_for_router)
+        except Exception as e:
+            print(f"[rivalclaw] Account sync failed (non-fatal): {e}")
+
     cycle_started_at_ms = time.time() * 1000
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
     run_id = elog.start_run()

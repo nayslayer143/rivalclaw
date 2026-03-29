@@ -13,6 +13,8 @@ import os
 import time
 import uuid
 
+import execution_router
+
 from openclaw_protocol import ProtocolEngine, ProtocolConfig, InMemoryEventStore
 from openclaw_protocol.store.sqlite import SqliteEventStore
 from openclaw_protocol.config.defaults import DEFAULT_PROTOCOL_CONFIG
@@ -38,6 +40,7 @@ _observability: ObservabilityStore | None = None
 _rollout: RolloutManager | None = None
 _lock: FileExecutionLock | None = None
 _lock_key: str | None = None  # track acquired lock key for shutdown
+_last_account_balance_cents: int = 0
 
 BOT_ID = "rivalclaw"
 INITIAL_BALANCE = 10000.0
@@ -223,7 +226,7 @@ def execute_trade(decision, cycle_started_at_ms: float, cycle_id: str | None = N
     _command_log.update_status(cmd.command_id, "executed")
 
     # --- Return legacy-compatible dict ---
-    return {
+    legacy_result = {
         "id": result.execution_id,
         "market_id": market_id,
         "direction": getattr(decision, "direction", "YES"),
@@ -238,6 +241,24 @@ def execute_trade(decision, cycle_started_at_ms: float, cycle_id: str | None = N
             "latency_penalty_bps": result.latency_penalty_bps,
         },
     }
+
+    # --- Route to shadow/live execution ---
+    try:
+        last_price = entry_price
+        acct_balance = _last_account_balance_cents
+        route_result = execution_router.route_trade(
+            decision=decision,
+            protocol_result=legacy_result,
+            last_market_price=last_price,
+            account_balance_cents=acct_balance,
+            cycle_id=cycle_id,
+        )
+        if route_result.get("status") not in ("skipped", None):
+            logger.info(f"Execution route: {route_result.get('mode')} -> {route_result.get('status')}")
+    except Exception as e:
+        logger.warning(f"Execution routing failed (non-fatal): {e}")
+
+    return legacy_result
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +432,9 @@ def shutdown() -> None:
     _lock = None
 
     logger.info("Protocol adapter shutdown complete")
+
+
+def set_account_balance(balance_cents: int) -> None:
+    """Update cached account balance for pre-flight checks."""
+    global _last_account_balance_cents
+    _last_account_balance_cents = balance_cents
