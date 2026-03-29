@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import math
 import os
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -2108,6 +2109,306 @@ def _check_vol_straddle(market, balance, spot_prices, spot_history) -> TradeDeci
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Strategy 23: Price-lag arb
+# Vol-distance dislocation model (not Black-Scholes) + time-decay amplifier.
+# Detects when crypto spot price has moved but the Kalshi contract hasn't
+# repriced yet (lag window). Distinct from fair_value_directional (which uses
+# Black-Scholes). Here: implied_prob = 1 - distance_pct / vol_factor,
+# multiplied by a decay factor that amplifies near-expiry signals.
+# ---------------------------------------------------------------------------
+
+PRICE_LAG_MIN_EDGE = float(os.environ.get("RIVALCLAW_PRICE_LAG_MIN_EDGE", "0.05"))
+PRICE_LAG_LATENCY_PENALTY = float(os.environ.get("RIVALCLAW_PRICE_LAG_LATENCY_PENALTY", "0.005"))
+PRICE_LAG_MAX_HORIZON = int(os.environ.get("RIVALCLAW_PRICE_LAG_MAX_HORIZON", "180"))
+
+# Compiled patterns for crypto title parsing
+_PL_CRYPTO_ASSETS = {
+    "bitcoin": re.compile(r"\b(?:BTC|Bitcoin)\b", re.IGNORECASE),
+    "ethereum": re.compile(r"\b(?:ETH|Ethereum)\b", re.IGNORECASE),
+}
+_PL_BINARY_ABOVE_RE = re.compile(
+    r"(?:above|over|exceed|reach|hit)\s*\$?([\d,]+\.?\d*[kK]?)", re.IGNORECASE
+)
+_PL_BINARY_BELOW_RE = re.compile(
+    r"(?:below|under|drop)\s*\$?([\d,]+\.?\d*[kK]?)", re.IGNORECASE
+)
+_PL_BRACKET_RE = re.compile(
+    r"\$?([\d,]+\.?\d*[kK]?)\s*[-\u2013]\s*\$?([\d,]+\.?\d*[kK]?)"
+)
+
+
+def _pl_parse_price_string(s: str) -> float | None:
+    if not s or not s.strip():
+        return None
+    s = s.strip().replace(",", "").replace("$", "")
+    multiplier = 1.0
+    if s.lower().endswith("k"):
+        multiplier = 1000.0
+        s = s[:-1]
+    try:
+        return float(s) * multiplier
+    except ValueError:
+        return None
+
+
+def _pl_detect_crypto_contract(market: dict) -> tuple | None:
+    """Detect crypto price contract from title text.
+
+    Returns (crypto_id, contract_type, params) or None.
+    Prefers floor_strike/cap_strike structured fields over regex when present.
+    """
+    question = market.get("question", "")
+
+    # Which crypto?
+    asset = None
+    for a, pattern in _PL_CRYPTO_ASSETS.items():
+        if pattern.search(question):
+            asset = a
+            break
+    # Also check _find_underlying for KXBTC/KXETH series (no question text needed)
+    if not asset:
+        asset = _find_underlying(market)
+        if asset not in _PL_CRYPTO_ASSETS:
+            return None
+
+    # Structured fields first (Kalshi provides floor_strike / cap_strike)
+    floor_s = market.get("floor_strike")
+    cap_s = market.get("cap_strike")
+    if floor_s and cap_s and float(floor_s) < float(cap_s):
+        return (asset, "continuous_bracket", {"bracket_low": float(floor_s), "bracket_high": float(cap_s)})
+    if floor_s and not cap_s:
+        return (asset, "binary_threshold", {"threshold": float(floor_s)})
+    if cap_s and not floor_s:
+        return (asset, "binary_threshold", {"threshold": float(cap_s)})
+
+    # Fall back to question text parsing
+    m = _PL_BRACKET_RE.search(question)
+    if m:
+        low = _pl_parse_price_string(m.group(1))
+        high = _pl_parse_price_string(m.group(2))
+        if low is not None and high is not None and low < high:
+            return (asset, "continuous_bracket", {"bracket_low": low, "bracket_high": high})
+
+    m = _PL_BINARY_ABOVE_RE.search(question)
+    if m:
+        threshold = _pl_parse_price_string(m.group(1))
+        if threshold is not None:
+            return (asset, "binary_threshold", {"threshold": threshold})
+
+    m = _PL_BINARY_BELOW_RE.search(question)
+    if m:
+        threshold = _pl_parse_price_string(m.group(1))
+        if threshold is not None:
+            return (asset, "binary_threshold", {"threshold": threshold})
+
+    return None
+
+
+def _pl_binary_dislocation(spot, threshold, market_yes, days_to_expiry):
+    """Vol-distance model for binary above/below threshold."""
+    distance_pct = abs(threshold - spot) / spot if spot > 0 else 999
+    vol_factor = 0.5 * math.sqrt(max(days_to_expiry, 1) / 30)
+    implied_prob = max(0.01, min(0.99, 1.0 - distance_pct / vol_factor))
+    if implied_prob > market_yes:
+        return (implied_prob - market_yes, "YES", implied_prob)
+    market_no = 1.0 - market_yes
+    implied_no = 1.0 - implied_prob
+    return (max(0.0, implied_no - market_no), "NO", implied_prob)
+
+
+def _pl_bracket_dislocation(spot, bracket_low, bracket_high, market_yes, days_to_expiry):
+    """Vol-distance model for continuous bracket contract."""
+    bracket_width = bracket_high - bracket_low
+    center = (bracket_low + bracket_high) / 2
+    if bracket_low <= spot <= bracket_high:
+        dist_from_center = abs(spot - center) / (bracket_width / 2) if bracket_width > 0 else 1
+        implied_prob = max(0.05, 0.7 * (1.0 - dist_from_center))
+    else:
+        dist = ((bracket_low - spot) / spot if spot < bracket_low else (spot - bracket_high) / spot) if spot > 0 else 999
+        vol_factor = 0.5 * math.sqrt(max(days_to_expiry, 1) / 30)
+        implied_prob = max(0.01, min(0.40, 0.3 * (1.0 - dist / vol_factor)))
+    raw_dislocation = abs(implied_prob - market_yes)
+    direction = "YES" if implied_prob > market_yes else "NO"
+    return (raw_dislocation, direction, implied_prob)
+
+
+def _check_price_lag_arb(market: dict, balance: float, spot_prices: dict) -> "TradeDecision | None":
+    """Vol-distance dislocation model with time-decay amplifier.
+
+    Fires when a Kalshi crypto contract hasn't repriced to reflect where
+    spot actually is. Decay multiplier: near-expiry signals are amplified
+    (the vol-distance gap is more likely to persist to resolution).
+    """
+    if market.get("venue") != "kalshi":
+        return None
+
+    detection = _pl_detect_crypto_contract(market)
+    if not detection:
+        return None
+
+    asset, contract_type, params = detection
+    spot = spot_prices.get(asset)
+    if not spot or spot <= 0:
+        return None
+
+    end_date_str = market.get("end_date") or market.get("close_time")
+    if not end_date_str:
+        return None
+    try:
+        import datetime as _dt
+        end_date = _dt.datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+        days_to_expiry = max(0, (end_date.replace(tzinfo=None) - _dt.datetime.utcnow()).days)
+    except (ValueError, TypeError):
+        return None
+    if days_to_expiry <= 0:
+        return None
+
+    market_yes = float(market.get("yes_price") or 0)
+    if market_yes <= 0:
+        return None
+
+    if contract_type == "binary_threshold":
+        raw_dislocation, direction, implied_prob = _pl_binary_dislocation(
+            spot, params["threshold"], market_yes, days_to_expiry
+        )
+    elif contract_type == "continuous_bracket":
+        raw_dislocation, direction, implied_prob = _pl_bracket_dislocation(
+            spot, params["bracket_low"], params["bracket_high"], market_yes, days_to_expiry
+        )
+    else:
+        return None
+
+    # Decay multiplier: near-expiry signals are stronger
+    decay = max(0.1, 1.0 - days_to_expiry / PRICE_LAG_MAX_HORIZON)
+    decayed_edge = raw_dislocation * decay - PRICE_LAG_LATENCY_PENALTY
+    if decayed_edge < PRICE_LAG_MIN_EDGE:
+        return None
+
+    entry_price = market_yes if direction == "YES" else (1.0 - market_yes)
+    amount = _size_for_strategy("price_lag_arb", decayed_edge, entry_price, balance, direction)
+    if amount is None:
+        return None
+
+    return TradeDecision(
+        market_id=market["market_id"],
+        question=market.get("question", ""),
+        direction=direction,
+        confidence=decayed_edge,
+        reasoning=(
+            f"PriceLagArb: {asset} spot={spot:,.0f}, implied={implied_prob:.2f} "
+            f"vs market_yes={market_yes:.2f}, raw={raw_dislocation:.3f}, "
+            f"decay={decay:.2f}, edge={decayed_edge:.3f}"
+        ),
+        strategy="price_lag_arb",
+        amount_usd=amount,
+        entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={
+            "edge": decayed_edge,
+            "raw_dislocation": raw_dislocation,
+            "implied_prob": implied_prob,
+            "days_to_expiry": days_to_expiry,
+            "decay": decay,
+            "venue": "kalshi",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strategy 24: Bid-gap arb
+# Detects single-venue guaranteed edge: yes_bid + no_bid < 1.0 - MIN_GAP.
+# Buying the cheaper side at ask price captures the gap minus fees.
+# Distinct from _check_arbitrage which compares yes_price + no_price (mid).
+# Bid-based gap is stricter and represents executable edge (fill at ask).
+# ---------------------------------------------------------------------------
+
+BID_GAP_MIN_GAP = float(os.environ.get("RIVALCLAW_BID_GAP_MIN_GAP", "0.025"))
+BID_GAP_MIN_VOLUME = float(os.environ.get("RIVALCLAW_BID_GAP_MIN_VOLUME", "100"))
+
+
+def _check_bid_gap_arb(market: dict, balance: float) -> "TradeDecision | None":
+    """Detect single-venue arb via bid-side gap.
+
+    yes_bid + no_bid < 1.0 means buying both sides costs < $1 and pays $1 at
+    resolution. We buy only the cheaper side (better EV for a one-sided bet).
+    Uses ask price for fill realism. Requires volume >= BID_GAP_MIN_VOLUME.
+    """
+    if market.get("venue") != "kalshi":
+        return None
+
+    yes_bid = market.get("yes_bid")
+    yes_ask = market.get("yes_ask")
+    no_bid = market.get("no_bid")
+    no_ask = market.get("no_ask")
+
+    if yes_bid is None or no_bid is None:
+        return None
+    if yes_bid <= 0 or no_bid <= 0:
+        return None
+
+    # Normalize if stored as cents
+    if yes_bid > 1: yes_bid /= 100.0
+    if no_bid > 1: no_bid /= 100.0
+    if yes_ask and yes_ask > 1: yes_ask /= 100.0
+    if no_ask and no_ask > 1: no_ask /= 100.0
+
+    gap = 1.0 - (yes_bid + no_bid)
+    if gap < BID_GAP_MIN_GAP:
+        return None
+
+    volume = float(market.get("volume_24h") or market.get("volume") or 0)
+    if volume < BID_GAP_MIN_VOLUME:
+        return None
+
+    # Buy cheaper side at ask price
+    if yes_bid <= no_bid:
+        direction = "YES"
+        entry_price = yes_ask if yes_ask and yes_ask > 0 else yes_bid + 0.01
+    else:
+        direction = "NO"
+        entry_price = no_ask if no_ask and no_ask > 0 else no_bid + 0.01
+
+    if entry_price <= 0 or entry_price >= 0.95:
+        return None
+
+    fee = _kalshi_fee(entry_price)
+    net_edge = gap - fee
+    if net_edge <= 0:
+        return None
+
+    # Confidence is bounded by the net edge (this is a mechanical arb, not directional)
+    confidence = min(0.65, 0.50 + net_edge)
+    amount = _size_for_strategy("bid_gap_arb", confidence, entry_price, balance, direction)
+    if amount is None:
+        return None
+
+    return TradeDecision(
+        market_id=market["market_id"],
+        question=market.get("question", ""),
+        direction=direction,
+        confidence=confidence,
+        reasoning=(
+            f"BidGapArb: yes_bid={yes_bid:.3f} + no_bid={no_bid:.3f} = "
+            f"{yes_bid + no_bid:.3f} (gap={gap:.3f}, net={net_edge:.3f})"
+        ),
+        strategy="bid_gap_arb",
+        amount_usd=amount,
+        entry_price=entry_price,
+        shares=amount / entry_price if entry_price > 0 else 0,
+        decision_generated_at_ms=time.time() * 1000,
+        metadata={
+            "edge": net_edge,
+            "gap": gap,
+            "yes_bid": yes_bid,
+            "no_bid": no_bid,
+            "venue": "kalshi",
+        },
+    )
+
+
 HEDGE_RATIO = float(os.environ.get("RIVALCLAW_HEDGE_RATIO", "0.30"))  # Hedge = 30% of primary size
 HEDGE_STRIKE_OFFSET = float(os.environ.get("RIVALCLAW_HEDGE_OFFSET", "0.02"))  # 2% OTM for hedge
 
@@ -2471,6 +2772,18 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             d = _check_vol_straddle(market, balance, spot, spot_history)
             if d:
                 stats["vol_straddle"] += 1
+
+        # 21. Price-lag arb (vol-distance model + time-decay amplifier)
+        if not d:
+            d = _check_price_lag_arb(market, balance, spot)
+            if d:
+                stats["price_lag_arb"] += 1
+
+        # 22. Bid-gap arb (yes_bid + no_bid gap → buy cheaper side at ask)
+        if not d:
+            d = _check_bid_gap_arb(market, balance)
+            if d:
+                stats["bid_gap_arb"] += 1
 
         if d:
             # Attach market priority score for velocity-weighted ranking
