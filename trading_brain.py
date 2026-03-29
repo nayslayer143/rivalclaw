@@ -35,7 +35,7 @@ import event_logger as elog
 
 # Strategies disabled based on live performance data (0% WR / negative edge)
 DISABLED_STRATEGIES = set(
-    os.environ.get("RIVALCLAW_DISABLED_STRATEGIES", "bracket_neighbor,hedge,pairs_trade").split(",")
+    os.environ.get("RIVALCLAW_DISABLED_STRATEGIES", "bracket_neighbor,hedge,pairs_trade,bid_gap_arb").split(",")
 )
 
 POLYMARKET_FEE_RATE = float(os.environ.get("ARB_FEE_RATE", "0.02"))
@@ -2780,7 +2780,8 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["price_lag_arb"] += 1
 
         # 22. Bid-gap arb (yes_bid + no_bid gap → buy cheaper side at ask)
-        if not d:
+        # DISABLED: 0/5 win rate, -$60 — not a true arb, buys wrong side consistently
+        if not d and "bid_gap_arb" not in DISABLED_STRATEGIES:
             d = _check_bid_gap_arb(market, balance)
             if d:
                 stats["bid_gap_arb"] += 1
