@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""
+RivalClaw Kalshi executor — order management, rate limiting, and account sync.
+
+Handles all communication with the Kalshi REST API for live order execution.
+Reuses RSA authentication from kalshi_feed.py.
+
+Env vars:
+    RIVALCLAW_DB_PATH          — path to rivalclaw.db (default: ./rivalclaw.db)
+    RIVALCLAW_KALSHI_WRITE_RATE — max writes per second (default: 10)
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import sqlite3
+import time
+import uuid
+from pathlib import Path
+
+import requests as _requests
+
+import kalshi_feed
+
+try:
+    from notify import send_live_alert
+except ImportError:
+    def send_live_alert(event: str, details: str = "") -> bool:
+        print(f"[kalshi_executor] alert (notify unavailable): {event} — {details}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Module-level state
+# ---------------------------------------------------------------------------
+
+DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
+WRITE_RATE_LIMIT = int(os.environ.get("RIVALCLAW_KALSHI_WRITE_RATE", "10"))
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Simple sliding-window rate limiter for API writes."""
+
+    def __init__(self, max_per_second: int = WRITE_RATE_LIMIT):
+        self._max = max_per_second
+        self._window_start = time.time()
+        self._count = 0
+
+    def acquire(self) -> bool:
+        now = time.time()
+        if now - self._window_start >= 1.0:
+            self._window_start = now
+            self._count = 0
+        if self._count >= self._max:
+            return False
+        self._count += 1
+        return True
+
+    def usage(self) -> dict:
+        return {
+            "used": self._count,
+            "limit": self._max,
+            "remaining": max(0, self._max - self._count),
+        }
+
+
+_write_limiter = RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+def _get_conn() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Order construction
+# ---------------------------------------------------------------------------
+
+def build_order_payload(
+    ticker: str,
+    action: str,
+    side: str,
+    count: int,
+    yes_price_dollars: float,
+) -> dict:
+    """Build a Kalshi order payload dict.
+
+    Converts dollar price to cents (clamped 1-99), generates a UUID4
+    client_order_id.
+    """
+    raw_cents = int(round(yes_price_dollars * 100))
+    yes_price_cents = max(1, min(99, raw_cents))
+
+    return {
+        "ticker": ticker,
+        "action": action,
+        "side": side,
+        "count": count,
+        "yes_price": yes_price_cents,
+        "type": "limit",
+        "client_order_id": str(uuid.uuid4()),
+    }
+
+
+# ---------------------------------------------------------------------------
+# DB logging
+# ---------------------------------------------------------------------------
+
+def log_order(
+    intent_id: str,
+    ticker: str,
+    action: str,
+    side: str,
+    count: int,
+    yes_price_cents: int,
+    mode: str,
+    client_order_id: str | None = None,
+    kalshi_order_id: str | None = None,
+    order_type: str = "limit",
+    cycle_id: str | None = None,
+    strategy: str | None = None,
+    market_question: str | None = None,
+) -> int:
+    """Insert a row into live_orders. Returns the row id."""
+    if client_order_id is None:
+        client_order_id = str(uuid.uuid4())
+
+    now = datetime.datetime.utcnow().isoformat()
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO live_orders
+            (intent_id, client_order_id, kalshi_order_id, ticker, action, side,
+             count, yes_price, order_type, status, submitted_at, mode,
+             cycle_id, strategy, market_question)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+            """,
+            (
+                intent_id, client_order_id, kalshi_order_id,
+                ticker, action, side, count, yes_price_cents,
+                order_type, now, mode,
+                cycle_id, strategy, market_question,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_order_status(
+    order_id: int,
+    status: str,
+    kalshi_order_id: str | None = None,
+    fill_price: int | None = None,
+    fill_count: int | None = None,
+    error_message: str | None = None,
+    rejection_reason: str | None = None,
+) -> None:
+    """Update a live_orders row with new status and optional fill data."""
+    now = datetime.datetime.utcnow().isoformat()
+    conn = _get_conn()
+    try:
+        sets = ["status = ?"]
+        vals: list = [status]
+
+        if kalshi_order_id is not None:
+            sets.append("kalshi_order_id = ?")
+            vals.append(kalshi_order_id)
+        if fill_price is not None:
+            sets.append("fill_price = ?")
+            vals.append(fill_price)
+        if fill_count is not None:
+            sets.append("fill_count = ?")
+            vals.append(fill_count)
+        if error_message is not None:
+            sets.append("error_message = ?")
+            vals.append(error_message)
+        if rejection_reason is not None:
+            sets.append("rejection_reason = ?")
+            vals.append(rejection_reason)
+        if status in ("filled", "partial_fill"):
+            sets.append("filled_at = ?")
+            vals.append(now)
+
+        vals.append(order_id)
+        conn.execute(
+            f"UPDATE live_orders SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_account_snapshot(
+    balance_cents: int,
+    portfolio_value_cents: int,
+    open_positions: int,
+) -> int:
+    """Insert a row into account_snapshots. Returns the row id."""
+    now = datetime.datetime.utcnow().isoformat()
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO account_snapshots
+            (balance_cents, portfolio_value_cents, open_positions, fetched_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (balance_cents, portfolio_value_cents, open_positions, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def log_reconciliation(
+    live_order_id: int,
+    paper_entry_price: float,
+    live_fill_price_cents: int,
+    paper_amount_usd: float,
+    live_amount_usd: float,
+) -> int:
+    """Insert a reconciliation row. Alerts if slippage > 500 bps."""
+    live_fill_price = live_fill_price_cents / 100.0
+    if paper_entry_price > 0:
+        slippage_bps = abs(live_fill_price - paper_entry_price) / paper_entry_price * 10_000
+    else:
+        slippage_bps = 0.0
+
+    now = datetime.datetime.utcnow().isoformat()
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO live_reconciliation
+            (live_order_id, paper_entry_price, live_fill_price,
+             slippage_delta_bps, paper_amount_usd, live_amount_usd, reconciled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                live_order_id, paper_entry_price, live_fill_price,
+                slippage_bps, paper_amount_usd, live_amount_usd, now,
+            ),
+        )
+        conn.commit()
+        row_id = cur.lastrowid
+    finally:
+        conn.close()
+
+    if slippage_bps > 500:
+        send_live_alert(
+            "slippage_warning",
+            f"Order {live_order_id}: {slippage_bps:.0f} bps slippage "
+            f"(paper={paper_entry_price:.4f}, live={live_fill_price:.4f})",
+        )
+
+    return row_id
+
+
+# ---------------------------------------------------------------------------
+# Kalshi API helpers (reuse RSA auth from kalshi_feed)
+# ---------------------------------------------------------------------------
+
+def _get_kalshi_auth_headers(method: str, path: str) -> dict | None:
+    """Get authenticated headers via kalshi_feed's RSA signer."""
+    return kalshi_feed._auth_headers(method, path)
+
+
+def _get_api_base() -> str:
+    """Get the Kalshi API base URL."""
+    return kalshi_feed._get_api_base()
+
+
+# ---------------------------------------------------------------------------
+# Kalshi API functions
+# ---------------------------------------------------------------------------
+
+def submit_order(payload: dict) -> dict:
+    """POST an order to Kalshi. Exponential backoff on 429."""
+    if not _write_limiter.acquire():
+        send_live_alert("rate_limited", f"Local rate limit hit for {payload.get('ticker')}")
+        return {"error": "rate_limited", "detail": "Local write rate limit exceeded"}
+
+    path = "/portfolio/orders"
+    max_retries = 3
+    backoff = 1.0
+
+    for attempt in range(max_retries):
+        headers = _get_kalshi_auth_headers("POST", path)
+        if headers is None:
+            return {"error": "auth_failed", "detail": "Could not generate auth headers"}
+
+        url = f"{_get_api_base()}{path}"
+        try:
+            resp = _requests.post(url, json=payload, headers=headers, timeout=30)
+
+            if resp.status_code == 429:
+                if attempt < max_retries - 1:
+                    print(f"[kalshi_executor] 429 — backing off {backoff}s (attempt {attempt + 1})")
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                send_live_alert("rate_limited", f"Kalshi 429 after {max_retries} retries")
+                return {"error": "rate_limited", "detail": "Kalshi 429 after retries"}
+
+            if resp.status_code == 401:
+                return {"error": "auth_failed", "detail": "401 Unauthorized"}
+
+            resp.raise_for_status()
+            return resp.json()
+
+        except _requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            return {"error": "request_failed", "detail": str(e)}
+
+    return {"error": "max_retries", "detail": "Exhausted retries"}
+
+
+def poll_order_status(
+    kalshi_order_id: str,
+    max_polls: int = 3,
+    interval: float = 2.0,
+) -> dict:
+    """Poll Kalshi for order fill status."""
+    path = f"/portfolio/orders/{kalshi_order_id}"
+
+    for i in range(max_polls):
+        headers = _get_kalshi_auth_headers("GET", path)
+        if headers is None:
+            return {"error": "auth_failed"}
+
+        url = f"{_get_api_base()}{path}"
+        try:
+            resp = _requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            order = data.get("order", data)
+            status = order.get("status", "")
+            if status in ("executed", "canceled", "cancelled"):
+                return order
+            if i < max_polls - 1:
+                time.sleep(interval)
+        except _requests.exceptions.RequestException as e:
+            if i < max_polls - 1:
+                time.sleep(interval)
+                continue
+            return {"error": "request_failed", "detail": str(e)}
+
+    return data.get("order", data) if "data" in dir() else {"error": "timeout"}
+
+
+def cancel_order(kalshi_order_id: str) -> dict:
+    """DELETE a single resting order."""
+    path = f"/portfolio/orders/{kalshi_order_id}"
+    headers = _get_kalshi_auth_headers("DELETE", path)
+    if headers is None:
+        return {"error": "auth_failed"}
+
+    url = f"{_get_api_base()}{path}"
+    try:
+        resp = _requests.delete(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {"status": "cancelled"}
+    except _requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
+
+def batch_cancel_orders() -> dict:
+    """DELETE all resting orders."""
+    path = "/portfolio/orders"
+    headers = _get_kalshi_auth_headers("DELETE", path)
+    if headers is None:
+        return {"error": "auth_failed"}
+
+    url = f"{_get_api_base()}{path}"
+    try:
+        resp = _requests.delete(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {"status": "all_cancelled"}
+    except _requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
+
+def get_balance() -> dict:
+    """GET account balance."""
+    path = "/portfolio/balance"
+    headers = _get_kalshi_auth_headers("GET", path)
+    if headers is None:
+        return {"error": "auth_failed"}
+
+    url = f"{_get_api_base()}{path}"
+    try:
+        resp = _requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except _requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
+
+def get_positions() -> dict:
+    """GET portfolio positions."""
+    path = "/portfolio/positions"
+    headers = _get_kalshi_auth_headers("GET", path)
+    if headers is None:
+        return {"error": "auth_failed"}
+
+    url = f"{_get_api_base()}{path}"
+    try:
+        resp = _requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except _requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
+
+def get_fills(limit: int = 50) -> dict:
+    """GET recent order fills."""
+    path = "/portfolio/fills"
+    headers = _get_kalshi_auth_headers("GET", path)
+    if headers is None:
+        return {"error": "auth_failed"}
+
+    url = f"{_get_api_base()}{path}"
+    try:
+        resp = _requests.get(url, headers=headers, params={"limit": limit}, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except _requests.exceptions.RequestException as e:
+        return {"error": "request_failed", "detail": str(e)}
+
+
+def sync_account() -> dict:
+    """Fetch balance + positions, log snapshot, return combined dict."""
+    balance_data = get_balance()
+    positions_data = get_positions()
+
+    if "error" in balance_data or "error" in positions_data:
+        return {
+            "error": "sync_failed",
+            "balance": balance_data,
+            "positions": positions_data,
+        }
+
+    balance_cents = balance_data.get("balance", 0)
+    portfolio_val = balance_data.get("portfolio_value", 0)
+    positions_list = positions_data.get("market_positions", [])
+    open_count = len([p for p in positions_list if p.get("position", 0) != 0])
+
+    log_account_snapshot(balance_cents, portfolio_val, open_count)
+
+    return {
+        "balance_cents": balance_cents,
+        "portfolio_value_cents": portfolio_val,
+        "open_positions": open_count,
+        "positions": positions_list,
+    }
+
+
+def get_rate_limit_usage() -> dict:
+    """Return current rate limiter usage."""
+    return _write_limiter.usage()
