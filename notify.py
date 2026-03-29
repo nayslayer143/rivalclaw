@@ -52,6 +52,26 @@ def send_telegram(text: str, parse_mode: str = "Markdown") -> bool:
     return True
 
 
+def send_live_alert(event: str, details: str = "") -> bool:
+    """Send a live trading alert via Telegram.
+
+    Events: order_submitted, order_filled, order_rejected, kill_switch,
+            mode_change, rate_limited, slippage_warning, balance_low
+    """
+    prefix = {
+        "order_submitted": "ORDER SENT",
+        "order_filled": "FILLED",
+        "order_rejected": "REJECTED",
+        "kill_switch": "KILL SWITCH ACTIVATED",
+        "mode_change": "MODE CHANGE",
+        "rate_limited": "RATE LIMITED",
+        "slippage_warning": "SLIPPAGE WARNING",
+        "balance_low": "LOW BALANCE",
+    }.get(event, event.upper())
+    msg = f"[RivalClaw LIVE] {prefix}\n{details}"
+    return send_telegram(msg, parse_mode="")
+
+
 def send_hourly_report():
     """Read the latest hourly report and send via Telegram."""
     if not REPORT_PATH.exists():
