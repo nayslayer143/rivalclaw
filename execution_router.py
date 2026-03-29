@@ -260,7 +260,7 @@ def route_trade(
 
     if not check["passed"]:
         # Log as rejected
-        executor.log_order(
+        order_id = executor.log_order(
             intent_id=intent_id,
             ticker=ticker,
             action=action,
@@ -271,6 +271,11 @@ def route_trade(
             cycle_id=cycle_id,
             strategy=decision.strategy,
             market_question=decision.question,
+        )
+        executor.update_order_status(
+            order_id,
+            status="rejected",
+            rejection_reason=check["reason"],
         )
         logger.warning(
             "Pre-flight rejected: %s — %s", ticker, check["reason"]
