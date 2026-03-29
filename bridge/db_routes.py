@@ -288,3 +288,38 @@ async def market_data(
             conn.close()
     except Exception as e:
         return {"error": str(e)}
+
+
+# ── Daily Detail ───────────────────────────────────────────────────────────
+
+
+@router.get("/daily-detail")
+async def daily_detail(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    try:
+        conn = _get_conn()
+        try:
+            trades = conn.execute(
+                "SELECT * FROM paper_trades WHERE status='closed' AND DATE(closed_at) = ? "
+                "ORDER BY closed_at DESC",
+                (date,),
+            ).fetchall()
+
+            strategies = conn.execute(
+                "SELECT strategy, COUNT(*) as trade_count, "
+                "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                "SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses, "
+                "ROUND(SUM(pnl), 4) as total_pnl, "
+                "ROUND(SUM(CASE WHEN pnl > 0 THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 2) as win_rate "
+                "FROM paper_trades WHERE status='closed' AND DATE(closed_at) = ? "
+                "GROUP BY strategy ORDER BY total_pnl DESC",
+                (date,),
+            ).fetchall()
+
+            return {
+                "trades": _rows_to_dicts(trades),
+                "strategies": _rows_to_dicts(strategies),
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        return {"error": str(e)}
