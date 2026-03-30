@@ -62,6 +62,10 @@ _current_cycle_id: str = ""
 _hour_order_count: int = 0
 _hour_window_start: float = 0.0
 
+# Anti-stacking: track market_ids with live orders submitted this session.
+# Prevents the same market from being traded multiple times across cycles.
+_submitted_market_ids: set[str] = set()
+
 # DB path override — tests can set this to a temp file
 _db_path: str | None = None
 
@@ -143,6 +147,11 @@ def reset_cycle(cycle_id: str) -> None:
     _current_cycle_id = cycle_id
 
 
+def clear_settled_market(market_id: str) -> None:
+    """Remove a market from the anti-stacking set after it settles."""
+    _submitted_market_ids.discard(market_id)
+
+
 # ---------------------------------------------------------------------------
 # Pre-flight check
 # ---------------------------------------------------------------------------
@@ -211,6 +220,15 @@ def preflight_check(
     ticker = decision.market_id
     if not any(ticker.startswith(prefix) for prefix in cfg["allowed_series"]):
         return {"passed": False, "reason": "series_not_allowed"}
+
+    # 8a. Anti-stacking — reject if we already submitted a live order for this market
+    if ticker in _submitted_market_ids:
+        return {"passed": False, "reason": "already_submitted"}
+    # Also check live_orders DB for orders placed in previous sessions
+    existing_sides = _get_open_sides_for_ticker(ticker)
+    current_side = "no" if decision.direction == "NO" else "yes"
+    if current_side in existing_sides:
+        return {"passed": False, "reason": "already_submitted"}
 
     # 8b. Block YES on 15-min contracts — live WR is ~9%, not viable
     if cfg["block_15m_yes"] and "15M" in ticker and decision.direction == "YES":
@@ -401,7 +419,8 @@ def route_trade(
             "intent_id": intent_id,
         }
 
-    # Successful submission
+    # Successful submission — register in anti-stacking set
+    _submitted_market_ids.add(ticker)
     kalshi_order_id = submit_result.get("order", {}).get("order_id", "")
     order_id = executor.log_order(
         intent_id=intent_id,

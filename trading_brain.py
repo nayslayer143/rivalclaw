@@ -35,8 +35,14 @@ import event_logger as elog
 
 # Strategies disabled based on live performance data (0% WR / negative edge)
 DISABLED_STRATEGIES = set(
-    os.environ.get("RIVALCLAW_DISABLED_STRATEGIES", "bracket_neighbor,hedge,pairs_trade,bid_gap_arb").split(",")
+    os.environ.get("RIVALCLAW_DISABLED_STRATEGIES",
+                   "bracket_neighbor,hedge,pairs_trade,bid_gap_arb,"
+                   "spot_momentum,wipeout_reversal,bracket_cone,"
+                   "closing_convergence,forecast_delta").split(",")
 )
+
+# Direction filter — YES trades: 15% WR over 88 trades, -$44 net (2026-03-30 analysis)
+BLOCK_YES_TRADES = os.environ.get("RIVALCLAW_BLOCK_YES_TRADES", "1") == "1"
 
 POLYMARKET_FEE_RATE = float(os.environ.get("ARB_FEE_RATE", "0.02"))
 MIN_EDGE = float(os.environ.get("ARB_MIN_EDGE", "0.005"))
@@ -2826,6 +2832,14 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         print(f"[rivalclaw/brain] Integrity rejected: {stats['integrity']}")
     parts = " ".join(f"{k}={v}" for k, v in sorted(stats.items()) if k != "integrity")
     print(f"[rivalclaw/brain] Signals: {parts} (total={len(hedged)})")
+
+    # Direction filter — block YES trades when data shows negative EV
+    if BLOCK_YES_TRADES:
+        before = len(hedged)
+        hedged = [d for d in hedged if d.direction != "YES"]
+        blocked_yes = before - len(hedged)
+        if blocked_yes:
+            print(f"[rivalclaw/brain] Blocked {blocked_yes} YES-direction trades (15% WR filter)")
 
     # Sort by confidence × velocity preference — faster markets rank higher
     def _rank(d):

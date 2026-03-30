@@ -275,7 +275,7 @@ def adjust_decision(decision, balance: float, regime: dict,
     decision.amount_usd = min(decision.amount_usd * final_mult, max_position)
     decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
-    if decision.amount_usd < 1:
+    if decision.amount_usd < 0.25:
         return None
 
     return decision
