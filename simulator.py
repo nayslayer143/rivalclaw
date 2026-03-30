@@ -379,6 +379,26 @@ def run_loop():
     opportunities_qualified = 0
     # Stable cycle_id derived from cycle start time
     cycle_id = str(int(cycle_started_at_ms))[:12]
+    # In live/shadow mode, clip each decision to the live order cap before execution.
+    # The brain sizes on paper balance (~$40k); the live cap is much smaller.
+    _live_max_order = float(os.environ.get("RIVALCLAW_LIVE_MAX_ORDER_USD", "2.0"))
+    _live_max_contracts = int(os.environ.get("RIVALCLAW_LIVE_MAX_CONTRACTS_PER_ORDER", "100"))
+    if exec_mode in ("live", "shadow"):
+        for d in decisions:
+            if d.amount_usd > _live_max_order and _live_max_order > 0:
+                scale = _live_max_order / d.amount_usd
+                d.amount_usd = _live_max_order
+                d.shares = d.shares * scale
+            if d.shares > _live_max_contracts:
+                scale = _live_max_contracts / d.shares
+                d.shares = float(_live_max_contracts)
+                d.amount_usd = d.amount_usd * scale
+            # Floor to whole contracts; drop if rounds to zero
+            d.shares = int(d.shares)
+            if d.shares < 1:
+                d.shares = 1
+            d.amount_usd = d.shares * d.entry_price
+
     for d in decisions:
         if d.market_id in open_ids:
             continue

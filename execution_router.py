@@ -162,13 +162,17 @@ def preflight_check(
     if current_exposure + decision.amount_usd > cfg["max_exposure_usd"]:
         return {"passed": False, "reason": "exposure_exceeded"}
 
-    # 5. Order size check
+    # 5. Order size check — clip to max rather than reject
     if decision.amount_usd > cfg["max_order_usd"]:
-        return {"passed": False, "reason": "order_too_large"}
+        scale = cfg["max_order_usd"] / decision.amount_usd
+        decision.amount_usd = cfg["max_order_usd"]
+        decision.shares = decision.shares * scale
 
-    # 6. Contract count check
+    # 6. Contract count check — clip to max rather than reject
     if decision.shares > cfg["max_contracts"]:
-        return {"passed": False, "reason": "too_many_contracts"}
+        scale = cfg["max_contracts"] / decision.shares
+        decision.shares = float(cfg["max_contracts"])
+        decision.amount_usd = decision.amount_usd * scale
 
     # 7. Rate check — per-cycle and per-hour limits
     now = time.time()
@@ -200,6 +204,12 @@ def preflight_check(
     # 10. Staleness check — data must be < 5 minutes old
     if stale_seconds >= _STALE_THRESHOLD_SECONDS:
         return {"passed": False, "reason": "stale_data"}
+
+    # Floor shares to whole contracts and reject if < 1
+    decision.shares = int(decision.shares)
+    if decision.shares < 1:
+        return {"passed": False, "reason": "order_too_small"}
+    decision.amount_usd = decision.shares * decision.entry_price
 
     return {"passed": True}
 
