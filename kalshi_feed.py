@@ -117,7 +117,14 @@ def _sign_request(private_key, timestamp_str, method, path):
     from cryptography.hazmat.primitives.asymmetric import padding
 
     message = (timestamp_str + method.upper() + path).encode("utf-8")
-    signature = private_key.sign(message, padding.PKCS1v15(), hashes.SHA256())
+    signature = private_key.sign(
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
     return base64.b64encode(signature).decode("utf-8")
 
 
@@ -139,7 +146,9 @@ def _auth_headers(method, path):
         return None
 
     timestamp_str = str(int(time.time() * 1000))
-    signature = _sign_request(private_key, timestamp_str, method, path)
+    # Kalshi SDK signs the full path including /trade-api/v2 prefix
+    full_path = "/trade-api/v2" + path
+    signature = _sign_request(private_key, timestamp_str, method, full_path)
 
     return {
         "KALSHI-ACCESS-KEY": api_key_id,
