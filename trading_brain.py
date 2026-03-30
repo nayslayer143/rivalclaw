@@ -51,6 +51,9 @@ STALE_THRESHOLD_MINUTES = float(os.environ.get("RIVALCLAW_STALE_MINUTES", "30"))
 
 MIN_FAIR_VALUE_EDGE = float(os.environ.get("RIVALCLAW_MIN_FV_EDGE", "0.04"))
 KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
+# Max entry price for any direction — NO at $0.80 means risking $0.80 to win $0.20.
+# Above this, risk/reward is unacceptable regardless of model confidence.
+MAX_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MAX_ENTRY_PRICE", "0.80"))
 VELOCITY_PREFERENCE = float(os.environ.get("RIVALCLAW_VELOCITY_PREFERENCE", "1.5"))
 
 # Data-driven edge multipliers (from 375-trade analysis)
@@ -433,6 +436,9 @@ def _check_fair_value(market, balance, spot_prices):
             direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.90), edge_no
         else:
             return None
+        # Risk/reward gate — reject entries where cost is too high relative to potential gain
+        if entry_price > MAX_ENTRY_PRICE:
+            return None
         amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance, direction)
         if amount is None:
             return None
@@ -473,6 +479,9 @@ def _check_fair_value(market, balance, spot_prices):
     elif edge_no > MIN_FAIR_VALUE_EDGE:
         direction, entry_price, confidence, edge = "NO", no_price, min(1.0 - fair, 0.95), edge_no
     else:
+        return None
+    # Risk/reward gate — reject entries where cost is too high relative to potential gain
+    if entry_price > MAX_ENTRY_PRICE:
         return None
     amount = _size_for_strategy("fair_value_directional", confidence, entry_price, balance, direction)
     if amount is None:

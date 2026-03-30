@@ -100,12 +100,13 @@ def _get_config() -> dict:
 
 
 def _get_open_sides_for_ticker(ticker: str) -> set:
-    """Return the set of sides ('yes', 'no') with resting/pending live orders for this ticker."""
+    """Return the set of sides ('yes', 'no') with active live orders for this ticker.
+    Includes filled orders — these represent real Kalshi positions that haven't settled."""
     db = _db_path or str(executor.DB_PATH)
     try:
         conn = sqlite3.connect(db)
         rows = conn.execute(
-            "SELECT DISTINCT side FROM live_orders WHERE ticker=? AND mode='live' AND status IN ('pending', 'resting')",
+            "SELECT DISTINCT side FROM live_orders WHERE ticker=? AND mode='live' AND status IN ('pending', 'resting', 'filled')",
             (ticker,),
         ).fetchall()
         conn.close()
@@ -115,9 +116,28 @@ def _get_open_sides_for_ticker(ticker: str) -> set:
         return set()
 
 
+def _has_any_live_order_for_ticker(ticker: str) -> bool:
+    """Check if ANY live order exists for this ticker (any side, any active status).
+    This is the primary anti-stacking guard.
+    Fails CLOSED — returns True (blocks) on any error, because allowing a
+    duplicate order is worse than missing one trade."""
+    db = _db_path or str(executor.DB_PATH)
+    try:
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT 1 FROM live_orders WHERE ticker=? AND mode='live' AND status IN ('pending', 'resting', 'filled') LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        logger.warning("Failed to check existing orders for %s: %s — blocking as safety measure", ticker, e)
+        return True
+
+
 def _get_open_live_exposure() -> float:
     """Query live_orders table for sum of (count * yes_price) where
-    mode='live' and status in ('pending', 'filled'). Returns dollars."""
+    mode='live' and status in ('pending', 'resting', 'filled'). Returns dollars."""
     db = _db_path or str(executor.DB_PATH)
     try:
         conn = sqlite3.connect(db)
@@ -125,7 +145,7 @@ def _get_open_live_exposure() -> float:
             """
             SELECT COALESCE(SUM(count * yes_price), 0) AS total_cents
             FROM live_orders
-            WHERE mode = 'live' AND status IN ('pending', 'resting')
+            WHERE mode = 'live' AND status IN ('pending', 'resting', 'filled')
             """
         ).fetchone()
         conn.close()
@@ -221,13 +241,12 @@ def preflight_check(
     if not any(ticker.startswith(prefix) for prefix in cfg["allowed_series"]):
         return {"passed": False, "reason": "series_not_allowed"}
 
-    # 8a. Anti-stacking — reject if we already submitted a live order for this market
+    # 8a. Anti-stacking — reject if ANY live order exists for this market (any side)
     if ticker in _submitted_market_ids:
         return {"passed": False, "reason": "already_submitted"}
-    # Also check live_orders DB for orders placed in previous sessions
-    existing_sides = _get_open_sides_for_ticker(ticker)
-    current_side = "no" if decision.direction == "NO" else "yes"
-    if current_side in existing_sides:
+    # DB check catches orders from previous process invocations (cron restarts)
+    # Includes pending, resting, AND filled — filled orders are real positions
+    if _has_any_live_order_for_ticker(ticker):
         return {"passed": False, "reason": "already_submitted"}
 
     # 8b. Block YES on 15-min contracts — live WR is ~9%, not viable

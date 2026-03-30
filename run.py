@@ -3,6 +3,7 @@
 import os
 import sys
 import argparse
+import fcntl
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -17,6 +18,21 @@ if env_file.exists():
 
 import simulator
 
+LOCK_FILE = Path(__file__).parent / ".rivalclaw_run.lock"
+
+
+def _acquire_lock():
+    """Acquire exclusive process lock. Returns lock file handle or None if already running."""
+    try:
+        lock_fh = open(LOCK_FILE, "w")
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.write(str(os.getpid()))
+        lock_fh.flush()
+        return lock_fh
+    except (IOError, OSError):
+        return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RivalClaw arb-only paper trader")
     parser.add_argument("--migrate", action="store_true", help="Create DB tables")
@@ -29,7 +45,15 @@ if __name__ == "__main__":
     if args.migrate:
         simulator.migrate()
     elif args.run:
-        simulator.run_loop()
+        lock_fh = _acquire_lock()
+        if lock_fh is None:
+            print("[rivalclaw] Another run is already in progress — skipping")
+            sys.exit(0)
+        try:
+            simulator.run_loop()
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            lock_fh.close()
     elif args.tune:
         import self_tuner
         self_tuner.run_tuning()
