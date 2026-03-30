@@ -30,6 +30,8 @@ Env vars:
     RIVALCLAW_LIVE_MAX_ORDERS_PER_HOUR    — max orders per hour (default: 10)
     RIVALCLAW_LIVE_SERIES                 — allowed series prefixes, comma-separated
     RIVALCLAW_LIVE_MAX_PRICE_DEVIATION    — max fractional deviation from market (default: 0.10)
+    RIVALCLAW_BLOCK_15M_YES               — 1 to block YES bets on 15-min contracts (default: 1)
+    RIVALCLAW_BLOCK_SELF_HEDGE            — 1 to block opposite-side bets on already-open tickers (default: 1)
 """
 from __future__ import annotations
 
@@ -83,12 +85,30 @@ def _get_config() -> dict:
         "max_price_deviation": float(
             os.environ.get("RIVALCLAW_LIVE_MAX_PRICE_DEVIATION", "0.10")
         ),
+        "block_15m_yes": os.environ.get("RIVALCLAW_BLOCK_15M_YES", "1") == "1",
+        "block_self_hedge": os.environ.get("RIVALCLAW_BLOCK_SELF_HEDGE", "1") == "1",
     }
 
 
 # ---------------------------------------------------------------------------
 # Exposure calculator
 # ---------------------------------------------------------------------------
+
+
+def _get_open_sides_for_ticker(ticker: str) -> set:
+    """Return the set of sides ('yes', 'no') with resting/pending live orders for this ticker."""
+    db = _db_path or str(executor.DB_PATH)
+    try:
+        conn = sqlite3.connect(db)
+        rows = conn.execute(
+            "SELECT DISTINCT side FROM live_orders WHERE ticker=? AND mode='live' AND status IN ('pending', 'resting')",
+            (ticker,),
+        ).fetchall()
+        conn.close()
+        return {row[0] for row in rows}
+    except Exception as e:
+        logger.warning("Failed to query open sides for %s: %s", ticker, e)
+        return set()
 
 
 def _get_open_live_exposure() -> float:
@@ -191,6 +211,17 @@ def preflight_check(
     ticker = decision.market_id
     if not any(ticker.startswith(prefix) for prefix in cfg["allowed_series"]):
         return {"passed": False, "reason": "series_not_allowed"}
+
+    # 8b. Block YES on 15-min contracts — live WR is ~9%, not viable
+    if cfg["block_15m_yes"] and "15M" in ticker and decision.direction == "YES":
+        return {"passed": False, "reason": "15m_yes_blocked"}
+
+    # 8c. Anti-self-hedge — reject if we already hold the opposite side on this ticker
+    if cfg["block_self_hedge"]:
+        open_sides = _get_open_sides_for_ticker(ticker)
+        opposite = "no" if decision.direction == "YES" else "yes"
+        if opposite in open_sides:
+            return {"passed": False, "reason": "self_hedge_blocked"}
 
     # 9. Price sanity — entry price within max_price_deviation of last market price
     if last_market_price > 0:
