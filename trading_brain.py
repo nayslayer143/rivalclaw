@@ -2725,11 +2725,11 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             if d:
                 stats["volume_confirmed"] += 1
 
-        # 13. Wipeout reversal (15-min mean reversion)
-        if not d:
-            d = _check_wipeout_reversal(market, balance, spot)
-            if d:
-                stats["wipeout_reversal"] += 1
+        # 13. Wipeout reversal (15-min mean reversion) — DISABLED (small sample, re-enable to test)
+        # if not d:
+        #     d = _check_wipeout_reversal(market, balance, spot)
+        #     if d:
+        #         stats["wipeout_reversal"] += 1
 
         # 14. Multi-timeframe consensus
         if not d:
