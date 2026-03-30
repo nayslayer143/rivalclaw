@@ -136,14 +136,20 @@ def _has_any_live_order_for_ticker(ticker: str) -> bool:
 
 
 def _get_open_live_exposure() -> float:
-    """Query live_orders table for sum of (count * yes_price) where
-    mode='live' and status in ('pending', 'resting', 'filled'). Returns dollars."""
+    """Query live_orders table for actual capital at risk.
+    For YES orders: cost = count * yes_price.
+    For NO orders: cost = count * (100 - yes_price).
+    Fails CLOSED — returns infinity on error so exposure check blocks."""
     db = _db_path or str(executor.DB_PATH)
     try:
         conn = sqlite3.connect(db)
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(count * yes_price), 0) AS total_cents
+            SELECT COALESCE(SUM(
+                CASE WHEN side = 'no' THEN count * (100 - yes_price)
+                     ELSE count * yes_price
+                END
+            ), 0) AS total_cents
             FROM live_orders
             WHERE mode = 'live' AND status IN ('pending', 'resting', 'filled')
             """
@@ -151,8 +157,8 @@ def _get_open_live_exposure() -> float:
         conn.close()
         return (row[0] if row else 0) / 100.0
     except Exception as e:
-        logger.warning("Failed to query open exposure: %s", e)
-        return 0.0
+        logger.warning("Failed to query open exposure: %s — blocking as safety measure", e)
+        return float("inf")
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +275,10 @@ def preflight_check(
                 "reason": f"price_deviation ({deviation:.2%} > {cfg['max_price_deviation']:.0%})",
             }
 
-    # 10. Staleness check — data must be < 5 minutes old
-    if stale_seconds >= _STALE_THRESHOLD_SECONDS:
-        return {"passed": False, "reason": "stale_data"}
+    # 10. Staleness check — currently disabled (stale_seconds never passed by caller)
+    # TODO: wire stale_seconds from market fetch timestamp through protocol_adapter
+    # if stale_seconds >= _STALE_THRESHOLD_SECONDS:
+    #     return {"passed": False, "reason": "stale_data"}
 
     # Floor shares to whole contracts and reject if < 1
     decision.shares = int(decision.shares)
@@ -336,6 +343,12 @@ def route_trade(
         decision, last_market_price, account_balance_cents, stale_seconds
     )
 
+    # Compute correct YES price for logging (entry_price is NO cost for NO trades)
+    if decision.direction == "NO":
+        log_yes_cents = int(round((1.0 - decision.entry_price) * 100))
+    else:
+        log_yes_cents = int(round(decision.entry_price * 100))
+
     if not check["passed"]:
         # Log as rejected
         order_id = executor.log_order(
@@ -344,7 +357,7 @@ def route_trade(
             action=action,
             side=side,
             count=decision.shares,
-            yes_price_cents=int(round(decision.entry_price * 100)),
+            yes_price_cents=log_yes_cents,
             mode=cfg["mode"],
             cycle_id=cycle_id,
             strategy=decision.strategy,
@@ -366,12 +379,19 @@ def route_trade(
         }
 
     # ---- Build order payload ----
+    # For NO orders: entry_price is the NO cost. Kalshi API takes yes_price as limit.
+    # Convert: if we want max NO cost = entry_price, set yes_price = 1 - entry_price.
+    # This ensures the limit correctly caps what we pay.
+    if decision.direction == "NO":
+        api_yes_price = 1.0 - decision.entry_price
+    else:
+        api_yes_price = decision.entry_price
     payload = executor.build_order_payload(
         ticker=ticker,
         action=action,
         side=side,
         count=decision.shares,
-        yes_price_dollars=decision.entry_price,
+        yes_price_dollars=api_yes_price,
     )
 
     # ---- Shadow mode: log only ----
@@ -473,8 +493,11 @@ def route_trade(
         fill_count=fill_count,
     )
 
-    # Log reconciliation
-    live_amount_usd = (fill_price * fill_count) / 100.0
+    # Log reconciliation — correct cost depends on side
+    if side == "no":
+        live_amount_usd = ((100 - fill_price) * fill_count) / 100.0
+    else:
+        live_amount_usd = (fill_price * fill_count) / 100.0
     executor.log_reconciliation(
         live_order_id=order_id,
         paper_entry_price=decision.entry_price,

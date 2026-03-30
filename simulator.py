@@ -395,6 +395,7 @@ def run_loop():
     _live_max_order = float(os.environ.get("RIVALCLAW_LIVE_MAX_ORDER_USD", "2.0"))
     _live_max_contracts = int(os.environ.get("RIVALCLAW_LIVE_MAX_CONTRACTS_PER_ORDER", "100"))
     if exec_mode in ("live", "shadow"):
+        sized = []
         for d in decisions:
             if d.amount_usd > _live_max_order and _live_max_order > 0:
                 scale = _live_max_order / d.amount_usd
@@ -407,8 +408,10 @@ def run_loop():
             # Floor to whole contracts; drop if rounds to zero
             d.shares = int(d.shares)
             if d.shares < 1:
-                d.shares = 1
+                continue  # Drop — too small after sizing
             d.amount_usd = d.shares * d.entry_price
+            sized.append(d)
+        decisions = sized
 
     for d in decisions:
         if d.market_id in open_ids:

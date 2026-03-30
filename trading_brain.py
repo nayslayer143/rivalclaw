@@ -33,12 +33,18 @@ import event_logger as elog
 # Constants
 # ---------------------------------------------------------------------------
 
-# Strategies disabled based on live performance data (0% WR / negative edge)
+# Strategies disabled based on live performance data + filter analysis
+# Performance kills: bracket_neighbor (0% WR), hedge (0% WR), pairs_trade (13% WR),
+#   bid_gap_arb (17% WR), spot_momentum (0% WR), wipeout_reversal, bracket_cone,
+#   closing_convergence (-$36 net), forecast_delta
+# Dead code (always produce filtered output): cross_strike_arb (always YES),
+#   vol_regime (always YES), expiry_convergence (NO entry > $0.60)
 DISABLED_STRATEGIES = set(
     os.environ.get("RIVALCLAW_DISABLED_STRATEGIES",
                    "bracket_neighbor,hedge,pairs_trade,bid_gap_arb,"
                    "spot_momentum,wipeout_reversal,bracket_cone,"
-                   "closing_convergence,forecast_delta").split(",")
+                   "closing_convergence,forecast_delta,"
+                   "cross_strike_arb,vol_regime,expiry_convergence").split(",")
 )
 
 # Direction filter — YES trades: 15% WR over 88 trades, -$44 net (2026-03-30 analysis)
@@ -51,9 +57,11 @@ STALE_THRESHOLD_MINUTES = float(os.environ.get("RIVALCLAW_STALE_MINUTES", "30"))
 
 MIN_FAIR_VALUE_EDGE = float(os.environ.get("RIVALCLAW_MIN_FV_EDGE", "0.04"))
 KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
-# Max entry price for any direction — NO at $0.80 means risking $0.80 to win $0.20.
-# Above this, risk/reward is unacceptable regardless of model confidence.
-MAX_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MAX_ENTRY_PRICE", "0.80"))
+# Entry price bounds — data-driven from 1,412 trades:
+#   NO 0.10-0.30 = sweet spot (60.8% WR, $225 of $226 live PnL)
+#   NO 0.70+ = "dumb zone" (win $0.18 avg, lose $0.88, need 5 wins per loss)
+MAX_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MAX_ENTRY_PRICE", "0.60"))
+MIN_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MIN_ENTRY_PRICE", "0.08"))
 VELOCITY_PREFERENCE = float(os.environ.get("RIVALCLAW_VELOCITY_PREFERENCE", "1.5"))
 
 # Data-driven edge multipliers (from 375-trade analysis)
@@ -2599,24 +2607,26 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
             event_groups[evt].append(m)
 
     # Cross-strike arb (runs on event groups)
-    for evt, group in event_groups.items():
-        d = _check_cross_strike_arb(group, balance)
-        if d:
-            decisions.append(d)
-            event_trade_count[evt] += 1
-            stats["cross_strike_arb"] += 1
+    if "cross_strike_arb" not in DISABLED_STRATEGIES:
+        for evt, group in event_groups.items():
+            d = _check_cross_strike_arb(group, balance)
+            if d:
+                decisions.append(d)
+                event_trade_count[evt] += 1
+                stats["cross_strike_arb"] += 1
 
     # Bracket cone (3 brackets closest to spot — spreads the hit zone)
-    for evt, group in event_groups.items():
-        if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
-            continue
-        cones = _check_bracket_cone(group, balance, spot)
-        for d in cones:
-            decisions.append(d)
-            event_trade_count[evt] += 1
-            stats["bracket_cone"] += 1
+    if "bracket_cone" not in DISABLED_STRATEGIES:
+        for evt, group in event_groups.items():
             if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
-                break
+                continue
+            cones = _check_bracket_cone(group, balance, spot)
+            for d in cones:
+                decisions.append(d)
+                event_trade_count[evt] += 1
+                stats["bracket_cone"] += 1
+                if event_trade_count[evt] >= MAX_TRADES_PER_EVENT:
+                    break
 
     # Bracket neighbor mispricing (runs on event groups)
     if "bracket_neighbor" not in DISABLED_STRATEGIES:
@@ -2680,7 +2690,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["fair_value"] += 1
 
         # 3. Spot momentum (NEW — ride crypto trends)
-        if not d:
+        if not d and "spot_momentum" not in DISABLED_STRATEGIES:
             d = _check_spot_momentum(market, balance, spot, spot_history)
             if d:
                 stats["spot_momentum"] += 1
@@ -2710,7 +2720,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["expiry_acceleration"] += 1
 
         # 8. Closing convergence (price approaching 0 or 1)
-        if not d:
+        if not d and "closing_convergence" not in DISABLED_STRATEGIES:
             d = _check_closing_convergence(market, balance)
             if d:
                 stats["closing_convergence"] += 1
@@ -2753,7 +2763,7 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["multi_timeframe"] += 1
 
         # 15. Vol regime switching (vol spike → buy OTM)
-        if not d:
+        if not d and "vol_regime" not in DISABLED_STRATEGIES:
             d = _check_vol_regime(market, balance, spot)
             if d:
                 stats["vol_regime"] += 1
@@ -2765,13 +2775,13 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["correlation_cascade"] += 1
 
         # 17. NWS forecast delta (weather gap after forecast update)
-        if not d:
+        if not d and "forecast_delta" not in DISABLED_STRATEGIES:
             d = _check_forecast_delta(market, balance)
             if d:
                 stats["forecast_delta"] += 1
 
         # 18. Expiry convergence (stuck in 10-35% / 65-90% near expiry)
-        if not d:
+        if not d and "expiry_convergence" not in DISABLED_STRATEGIES:
             d = _check_expiry_convergence(market, balance)
             if d:
                 stats["expiry_convergence"] += 1
@@ -2849,6 +2859,13 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         blocked_yes = before - len(hedged)
         if blocked_yes:
             print(f"[rivalclaw/brain] Blocked {blocked_yes} YES-direction trades (15% WR filter)")
+
+    # Entry price bounds — applied to ALL strategies globally
+    before = len(hedged)
+    hedged = [d for d in hedged if MIN_ENTRY_PRICE <= d.entry_price <= MAX_ENTRY_PRICE]
+    blocked_price = before - len(hedged)
+    if blocked_price:
+        print(f"[rivalclaw/brain] Blocked {blocked_price} trades outside ${MIN_ENTRY_PRICE:.2f}-${MAX_ENTRY_PRICE:.2f} entry range")
 
     # Sort by confidence × velocity preference — faster markets rank higher
     def _rank(d):

@@ -129,6 +129,10 @@ async def exchange_status():
 
 @router.post("/orders")
 async def submit_order(order: OrderRequest):
+    """Submit order — gated behind kill switch for safety."""
+    import os
+    if os.environ.get("RIVALCLAW_LIVE_KILL_SWITCH", "1") == "1":
+        return {"error": "kill_switch_active", "detail": "Kill switch is ON — disable via .env to submit orders"}
     try:
         payload = kalshi_executor.build_order_payload(
             ticker=order.ticker,
