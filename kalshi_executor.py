@@ -448,6 +448,43 @@ def get_fills(limit: int = 50) -> dict:
         return {"error": "request_failed", "detail": str(e)}
 
 
+def reconcile_resting_orders() -> int:
+    """Check all 'resting' live_orders against Kalshi and update status if executed/cancelled.
+    Returns number of orders updated."""
+    import kalshi_feed as _kf
+    conn = _get_conn()
+    updated = 0
+    try:
+        resting = conn.execute(
+            "SELECT id, kalshi_order_id FROM live_orders WHERE status='resting' AND kalshi_order_id IS NOT NULL"
+        ).fetchall()
+        for row in resting:
+            path = f"/portfolio/orders/{row['kalshi_order_id']}"
+            headers = _kf._auth_headers("GET", path)
+            if not headers:
+                continue
+            try:
+                import requests as _r
+                resp = _r.get(f"{_kf._get_api_base()}{path}", headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    kalshi_status = resp.json().get("order", {}).get("status", "")
+                    if kalshi_status in ("executed",):
+                        conn.execute("UPDATE live_orders SET status='filled' WHERE id=?", (row["id"],))
+                        updated += 1
+                    elif kalshi_status in ("cancelled", "canceled", "expired"):
+                        conn.execute("UPDATE live_orders SET status='cancelled' WHERE id=?", (row["id"],))
+                        updated += 1
+                elif resp.status_code == 404:
+                    conn.execute("UPDATE live_orders SET status='cancelled' WHERE id=?", (row["id"],))
+                    updated += 1
+            except Exception:
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
+
+
 def sync_account() -> dict:
     """Fetch balance + positions, log snapshot, return combined dict."""
     balance_data = get_balance()
@@ -464,6 +501,9 @@ def sync_account() -> dict:
     portfolio_val = balance_data.get("portfolio_value", 0)
     positions_list = positions_data.get("market_positions", [])
     open_count = len([p for p in positions_list if p.get("position", 0) != 0])
+
+    # Reconcile any stale resting orders
+    reconcile_resting_orders()
 
     log_account_snapshot(balance_cents, portfolio_val, open_count)
 

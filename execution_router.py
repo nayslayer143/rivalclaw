@@ -101,7 +101,7 @@ def _get_open_live_exposure() -> float:
             """
             SELECT COALESCE(SUM(count * yes_price), 0) AS total_cents
             FROM live_orders
-            WHERE mode = 'live' AND status IN ('pending', 'filled')
+            WHERE mode = 'live' AND status IN ('pending', 'resting')
             """
         ).fetchone()
         conn.close()
