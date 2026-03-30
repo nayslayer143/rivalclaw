@@ -247,6 +247,17 @@ def run_loop():
             acct = kalshi_executor.sync_account()
             if acct:
                 protocol_adapter.set_account_balance(acct["balance_cents"])
+                # Floor check — suspend live trading if balance hits $25
+                balance_usd = acct["balance_cents"] / 100
+                kill_floor = float(os.environ.get("RIVALCLAW_LIVE_BALANCE_FLOOR", "25.00"))
+                if balance_usd <= kill_floor and os.environ.get("RIVALCLAW_LIVE_KILL_SWITCH", "0") == "0":
+                    env_path = str(Path(__file__).parent / ".env")
+                    with open(env_path) as _f:
+                        _env = _f.read()
+                    with open(env_path, "w") as _f:
+                        _f.write(_env.replace("RIVALCLAW_LIVE_KILL_SWITCH=0", "RIVALCLAW_LIVE_KILL_SWITCH=1"))
+                    os.environ["RIVALCLAW_LIVE_KILL_SWITCH"] = "1"
+                    print(f"[rivalclaw] FLOOR HIT: balance ${balance_usd:.2f} <= ${kill_floor:.2f} — kill switch activated.")
             cycle_id_for_router = str(int(time.time() * 1000))[:12]
             execution_router.reset_cycle(cycle_id_for_router)
         except Exception as e:
