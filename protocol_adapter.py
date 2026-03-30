@@ -288,6 +288,13 @@ def check_stops(current_prices: dict) -> list[dict]:
         if not price_data:
             continue
 
+        # Fast-resolving contracts (<60 min to expiry): skip stop-loss/take-profit.
+        # On 15-min contracts, stop-losses kill winners and can't save losers
+        # (price gaps between cycles). Let them ride to expiry.
+        is_fast = "15M" in pos.contract_id  # 15-min crypto contracts
+        if is_fast:
+            continue
+
         # Get current price based on position side
         if pos.side == "BUY":
             current_price = price_data.get("yes_price", pos.entry_price_avg)
