@@ -40,14 +40,14 @@ async def wallet():
             # Closed trades PnL
             closed = conn.execute(
                 "SELECT COALESCE(SUM(pnl), 0) as total_pnl, COUNT(*) as total_trades "
-                "FROM paper_trades WHERE status='closed'"
+                "FROM paper_trades WHERE status IN ('closed_win','closed_loss','expired')"
             ).fetchone()
             closed_pnl = closed["total_pnl"]
             total_trades = closed["total_trades"]
 
             # Win rate
             wins = conn.execute(
-                "SELECT COUNT(*) as cnt FROM paper_trades WHERE status='closed' AND pnl > 0"
+                "SELECT COUNT(*) as cnt FROM paper_trades WHERE status='closed_win'"
             ).fetchone()["cnt"]
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
 
@@ -88,9 +88,10 @@ async def trades(
             where_parts = []
             params: list = []
 
-            if status != "all":
-                where_parts.append("status = ?")
-                params.append(status)
+            if status == "closed":
+                where_parts.append("status IN ('closed_win','closed_loss','expired')")
+            elif status == "open":
+                where_parts.append("status = 'open'")
             if strategy:
                 where_parts.append("strategy = ?")
                 params.append(strategy)
@@ -176,7 +177,7 @@ async def strategies():
                     ROUND(SUM(pnl), 4) as total_pnl,
                     ROUND(SUM(CASE WHEN pnl > 0 THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 2) as win_rate
                 FROM paper_trades
-                WHERE status = 'closed'
+                WHERE status IN ('closed_win','closed_loss','expired')
                 GROUP BY strategy
                 ORDER BY total_pnl DESC
             """).fetchall()
@@ -299,7 +300,7 @@ async def daily_detail(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
         conn = _get_conn()
         try:
             trades = conn.execute(
-                "SELECT * FROM paper_trades WHERE status='closed' AND DATE(closed_at) = ? "
+                "SELECT * FROM paper_trades WHERE status IN ('closed_win','closed_loss','expired') AND DATE(closed_at) = ? "
                 "ORDER BY closed_at DESC",
                 (date,),
             ).fetchall()
@@ -310,7 +311,7 @@ async def daily_detail(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
                 "SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses, "
                 "ROUND(SUM(pnl), 4) as total_pnl, "
                 "ROUND(SUM(CASE WHEN pnl > 0 THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 2) as win_rate "
-                "FROM paper_trades WHERE status='closed' AND DATE(closed_at) = ? "
+                "FROM paper_trades WHERE status IN ('closed_win','closed_loss','expired') AND DATE(closed_at) = ? "
                 "GROUP BY strategy ORDER BY total_pnl DESC",
                 (date,),
             ).fetchall()
