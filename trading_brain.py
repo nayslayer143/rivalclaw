@@ -57,6 +57,13 @@ STALE_THRESHOLD_MINUTES = float(os.environ.get("RIVALCLAW_STALE_MINUTES", "30"))
 
 MIN_FAIR_VALUE_EDGE = float(os.environ.get("RIVALCLAW_MIN_FV_EDGE", "0.04"))
 KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
+
+# Signal reversal — series where our model is consistently wrong (anti-correlated).
+# Flip direction: if model says NO, we bet YES (and vice versa).
+# Data: DOGE 2W/11L (15% WR) on NO = 85% WR if reversed.
+REVERSE_SERIES = set(
+    os.environ.get("RIVALCLAW_REVERSE_SERIES", "KXDOGE15M").split(",")
+)
 # Entry price bounds — data-driven from 1,412 trades:
 #   NO 0.10-0.30 = sweet spot (60.8% WR, $225 of $226 live PnL)
 #   NO 0.70+ = "dumb zone" (win $0.18 avg, lose $0.88, need 5 wins per loss)
@@ -118,7 +125,8 @@ SERIES_TO_UNDERLYING = {
     "KXBNB15M": "binancecoin", "KXBCH15M": "bitcoin-cash",
     "KXBTC": "bitcoin", "KXBTCMAXD": "bitcoin", "KXETH": "ethereum",
     "KXBTCD": "bitcoin", "KXETHD": "ethereum",
-    "KXSOLD": "solana", "KXXRPD": "ripple",
+    "KXSOLD": "solana",
+    # KXXRPD removed: 0W/4L, reversal blocked by price filter, model misprices XRP vol
 }
 
 # Weather series → city mapping (for weather_feed)
@@ -2856,15 +2864,38 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     parts = " ".join(f"{k}={v}" for k, v in sorted(stats.items()) if k != "integrity")
     print(f"[rivalclaw/brain] Signals: {parts} (total={len(hedged)})")
 
+    # Signal reversal — flip direction for anti-correlated series
+    reversed_count = 0
+    for d in hedged:
+        series = d.market_id.split("-")[0] if d.market_id else ""
+        if series in REVERSE_SERIES:
+            old_dir = d.direction
+            if d.direction == "NO":
+                d.direction = "YES"
+                d.entry_price = 1.0 - d.entry_price  # NO cost → YES cost
+            else:
+                d.direction = "NO"
+                d.entry_price = 1.0 - d.entry_price
+            d.shares = d.amount_usd / d.entry_price if d.entry_price > 0 else 0
+            d.reasoning = f"[REVERSED {old_dir}→{d.direction}] {d.reasoning}"
+            reversed_count += 1
+    if reversed_count:
+        print(f"[rivalclaw/brain] Reversed {reversed_count} signals (anti-correlated series)")
+
     # Direction filter — block YES trades when data shows negative EV
+    # NOTE: reversed DOGE trades are now YES, so they need a YES-filter exemption
     if BLOCK_YES_TRADES:
         before = len(hedged)
-        hedged = [d for d in hedged if d.direction != "YES"]
+        hedged = [d for d in hedged if d.direction != "YES"
+                  or d.market_id.split("-")[0] in REVERSE_SERIES]
         blocked_yes = before - len(hedged)
         if blocked_yes:
             print(f"[rivalclaw/brain] Blocked {blocked_yes} YES-direction trades (15% WR filter)")
 
-    # Entry price bounds — applied to ALL strategies globally
+    # Entry price bounds — applied to ALL strategies globally (including reversed)
+    # This protects reversed trades from bad risk/reward:
+    #   NO @$0.14 → reversed YES @$0.86 → BLOCKED (risk $0.86 to win $0.14)
+    #   NO @$0.50 → reversed YES @$0.50 → PASS (risk $0.50 to win $0.50)
     before = len(hedged)
     hedged = [d for d in hedged if MIN_ENTRY_PRICE <= d.entry_price <= MAX_ENTRY_PRICE]
     blocked_price = before - len(hedged)
