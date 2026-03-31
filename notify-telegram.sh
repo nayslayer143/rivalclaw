@@ -7,18 +7,16 @@
 #   ./notify-telegram.sh "Your message here"
 #   echo "Your message" | ./notify-telegram.sh
 #
-# Token priority:
-#   1. RIVALCLAW_BOT_TOKEN from ~/openclaw/.env  (own bot — sends as @rivalclaw_bot)
-#   2. TELEGRAM_BOT_TOKEN from ~/openclaw/.env   (fallback — sends as @ogdenclashbot with [RivalClaw] prefix)
+# Token source: TELEGRAM_BOT_TOKEN from ~/rivalclaw/.env (@rivalclaw_bot)
 # =============================================================================
 
 set -euo pipefail
 
-OPENCLAW_ENV="${HOME}/openclaw/.env"
+RIVALCLAW_ENV="${HOME}/rivalclaw/.env"
 
-# Load .env safely via Python (avoids bash issues with unquoted spaces in values)
-if [[ -f "$OPENCLAW_ENV" ]]; then
-  eval "$(python3 - "$OPENCLAW_ENV" <<'PYEOF'
+# Load RivalClaw's own .env
+if [[ -f "$RIVALCLAW_ENV" ]]; then
+  eval "$(python3 - "$RIVALCLAW_ENV" <<'PYEOF'
 import sys, os
 path = sys.argv[1]
 with open(path) as f:
@@ -29,7 +27,6 @@ with open(path) as f:
         k, _, v = line.partition('=')
         k = k.strip()
         v = v.strip()
-        # Only export simple safe keys
         if k.isidentifier() or all(c.isalnum() or c == '_' for c in k):
             print(f"export {k}={v!r}")
 PYEOF
@@ -48,43 +45,22 @@ if [[ -z "${MESSAGE:-}" ]]; then
   exit 1
 fi
 
-# Pick bot token
-RIVAL_TOKEN="${RIVALCLAW_BOT_TOKEN:-}"
-MAIN_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-PREFIX=""
+# Use RivalClaw's own bot token
+BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 
-if [[ -n "$RIVAL_TOKEN" && "$RIVAL_TOKEN" != PASTE* ]]; then
-  BOT_TOKEN="$RIVAL_TOKEN"
-else
-  # Fall back to main bot with label prefix
-  if [[ -z "$MAIN_TOKEN" ]]; then
-    echo "ERROR: No Telegram bot token found in ${OPENCLAW_ENV}" >&2
-    exit 1
-  fi
-  BOT_TOKEN="$MAIN_TOKEN"
-  PREFIX="[RivalClaw] "
+if [[ -z "$BOT_TOKEN" ]]; then
+  echo "ERROR: TELEGRAM_BOT_TOKEN not set in ${RIVALCLAW_ENV}" >&2
+  exit 1
 fi
 
-# Resolve chat_id from TELEGRAM_ALLOWED_USERS
-CHAT_ID=$(python3 -c "
-import os, json
-v = os.environ.get('TELEGRAM_ALLOWED_USERS', '')
-try:
-    parsed = json.loads(v)
-    if isinstance(parsed, list):
-        print(parsed[0])
-    else:
-        print(str(parsed))
-except Exception:
-    print(v.strip())
-")
+CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
 if [[ -z "$CHAT_ID" ]]; then
   echo "ERROR: TELEGRAM_ALLOWED_USERS not set" >&2
   exit 1
 fi
 
-FULL_MESSAGE="${PREFIX}${MESSAGE}"
+FULL_MESSAGE="${MESSAGE}"
 
 RESPONSE=$(curl -s -X POST \
   "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \

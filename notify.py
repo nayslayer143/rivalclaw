@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RivalClaw notification system — sends hourly reports via Telegram.
-Uses the OpenClaw Telegram bot token.
+Uses the @rivalclaw_bot Telegram bot token.
 
 Setup: Set TELEGRAM_CHAT_ID in rivalclaw/.env
 To get your chat ID: message the bot, then run:
@@ -12,7 +12,7 @@ import os
 import requests
 from pathlib import Path
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8715575240:AAEDmNkLsUjeq0zYuO4yNKTx1WthLnqa7yo")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8615622626:AAGwarVufm4u1TdUoKhPQUCb4-OhkJH-01A")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 REPORT_PATH = Path(__file__).parent / "daily" / "hourly-latest.md"
 
