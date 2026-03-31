@@ -72,13 +72,22 @@ async def wallet(source: str = Query("paper", pattern="^(paper|live)$")):
                     "losses": losses,
                 }
             else:
-                # Live mode — compute from live_orders + account_snapshots
-                filled = conn.execute(
-                    "SELECT COUNT(*) as total, "
-                    "COALESCE(SUM(fill_count), 0) as total_fills "
-                    "FROM live_orders WHERE status = 'filled'"
+                # Live mode — use paper_trades with live execution timestamps
+                # These are trades that actually went to Kalshi (trade_executed_at_ms != NULL)
+                stats = conn.execute(
+                    "SELECT "
+                    "  COUNT(*) as total, "
+                    "  SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END) as wins, "
+                    "  SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END) as losses, "
+                    "  SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) as open_count, "
+                    "  COALESCE(SUM(CASE WHEN status IN ('closed_win','closed_loss') THEN pnl ELSE 0 END), 0) as total_pnl "
+                    "FROM paper_trades "
+                    "WHERE venue='kalshi' AND trade_executed_at_ms IS NOT NULL"
                 ).fetchone()
-                total_trades = filled["total"]
+                total_trades = stats["wins"] + stats["losses"]
+                wins = stats["wins"]
+                losses = stats["losses"]
+                win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
 
                 # Latest account snapshot for balance
                 snap = conn.execute(
@@ -86,17 +95,15 @@ async def wallet(source: str = Query("paper", pattern="^(paper|live)$")):
                 ).fetchone()
                 balance = float(snap["balance_cents"]) / 100 if snap else 0.0
 
-                pending = conn.execute(
-                    "SELECT COUNT(*) as cnt FROM live_orders WHERE status IN ('pending','resting')"
-                ).fetchone()["cnt"]
-
                 return {
                     "balance": round(balance, 2),
-                    "starting_balance": 0.0,
-                    "closed_pnl": 0.0,
-                    "open_positions": pending,
-                    "win_rate": 0.0,
+                    "starting_balance": 50.0,
+                    "closed_pnl": round(stats["total_pnl"], 2),
+                    "open_positions": stats["open_count"],
+                    "win_rate": round(win_rate, 2),
                     "total_trades": total_trades,
+                    "wins": wins,
+                    "losses": losses,
                 }
         finally:
             conn.close()

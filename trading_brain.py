@@ -109,12 +109,16 @@ CRYPTO_VOL = {
     "bitcoin-cash": float(os.environ.get("RIVALCLAW_VOL_BITCOIN_CASH", "0.75")),
     "bitcoin": float(os.environ.get("RIVALCLAW_VOL_BITCOIN", "0.60")),
     "ethereum": float(os.environ.get("RIVALCLAW_VOL_ETHEREUM", "0.65")),
+    "solana": float(os.environ.get("RIVALCLAW_VOL_SOLANA", "0.85")),
+    "ripple": float(os.environ.get("RIVALCLAW_VOL_RIPPLE", "0.80")),
 }
 
 SERIES_TO_UNDERLYING = {
     "KXDOGE15M": "dogecoin", "KXADA15M": "cardano",
     "KXBNB15M": "binancecoin", "KXBCH15M": "bitcoin-cash",
     "KXBTC": "bitcoin", "KXBTCMAXD": "bitcoin", "KXETH": "ethereum",
+    "KXBTCD": "bitcoin", "KXETHD": "ethereum",
+    "KXSOLD": "solana", "KXXRPD": "ripple",
 }
 
 # Weather series → city mapping (for weather_feed)

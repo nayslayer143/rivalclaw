@@ -11,7 +11,7 @@ import requests
 COINGECKO_API = "https://api.coingecko.com/api/v3/simple/price"
 
 # CoinGecko IDs for cryptos we trade on Kalshi
-CRYPTO_IDS = "bitcoin,ethereum,dogecoin,cardano,binancecoin,bitcoin-cash"
+CRYPTO_IDS = "bitcoin,ethereum,dogecoin,cardano,binancecoin,bitcoin-cash,solana,ripple"
 
 _cache: dict = {}
 _cache_ts: float = 0

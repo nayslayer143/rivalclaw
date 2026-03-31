@@ -31,8 +31,10 @@ CACHE_MAX_AGE_HOURS = 0  # Always fetch fresh — we need current data for all s
 FAST_SERIES = [
     # 15-min crypto (fastest feedback)
     "KXDOGE15M", "KXADA15M", "KXBNB15M", "KXBCH15M",
-    # Daily crypto
+    # Hourly crypto range/bracket (96%+ paper WR on NO fair_value)
     "KXBTC", "KXETH", "KXBTCMAXD",
+    # Hourly crypto directional above/below (new — high volume)
+    "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD",
     # Weather (resolves same day, real volume)
     "KXHIGHTDC", "KXHIGHTSFO", "KXTEMPNYCH",
     # Commodities + FX (daily)
