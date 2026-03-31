@@ -35,8 +35,10 @@ FAST_SERIES = [
     "KXBTC", "KXETH", "KXBTCMAXD",
     # Hourly crypto directional above/below (new — high volume)
     "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD",
-    # Weather (resolves same day, real volume)
+    # Weather (resolves same day, real volume — 9 cities)
     "KXHIGHTDC", "KXHIGHTSFO", "KXTEMPNYCH",
+    "KXHIGHTHOU", "KXHIGHTBOS", "KXHIGHTATL",
+    "KXHIGHTDAL", "KXHIGHTPHX", "KXHIGHTSEA",
     # Commodities + FX (daily)
     "KXGOLDD", "KXSILVERD", "KXTNOTED", "KXUSDJPY",
     # Index (daily)

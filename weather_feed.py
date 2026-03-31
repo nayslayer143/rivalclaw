@@ -19,6 +19,12 @@ NWS_POINTS = {
     "dc": "https://api.weather.gov/gridpoints/LWX/97,71/forecast",
     "sf": "https://api.weather.gov/gridpoints/MTR/85,105/forecast",
     "nyc": "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
+    "houston": "https://api.weather.gov/gridpoints/HGX/63,95/forecast",
+    "boston": "https://api.weather.gov/gridpoints/BOX/71,90/forecast",
+    "atlanta": "https://api.weather.gov/gridpoints/FFC/51,87/forecast",
+    "dallas": "https://api.weather.gov/gridpoints/FWD/89,104/forecast",
+    "phoenix": "https://api.weather.gov/gridpoints/PSR/159,58/forecast",
+    "seattle": "https://api.weather.gov/gridpoints/SEW/125,68/forecast",
 }
 
 # Map Kalshi series to city
@@ -26,6 +32,12 @@ SERIES_TO_CITY = {
     "KXHIGHTDC": "dc",
     "KXHIGHTSFO": "sf",
     "KXTEMPNYCH": "nyc",
+    "KXHIGHTHOU": "houston",
+    "KXHIGHTBOS": "boston",
+    "KXHIGHTATL": "atlanta",
+    "KXHIGHTDAL": "dallas",
+    "KXHIGHTPHX": "phoenix",
+    "KXHIGHTSEA": "seattle",
 }
 
 # Forecast error std dev in °F (same-day NWS forecast accuracy)

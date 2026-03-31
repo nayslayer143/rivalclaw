@@ -72,15 +72,7 @@ def run():
 
     conn.close()
 
-    # Decide if we should send
-    new_closed = total_closed - state.get("last_closed", 0)
-    milestone = (len(rows) >= TARGET and state.get("last_total", 0) < TARGET)
-    periodic = new_closed >= 3  # send when 3+ new trades closed since last update
-
-    if not periodic and not milestone and len(rows) <= state.get("last_total", 0):
-        save_state(state)
-        print(f"[monitor] {len(rows)}/100 | {wins}W/{losses}L | no update needed")
-        return
+    # Always send — user wants consistent 5-min updates
 
     # Build message
     mkt_lines = []

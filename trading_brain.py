@@ -134,6 +134,12 @@ SERIES_TO_WEATHER = {
     "KXHIGHTDC": "dc",
     "KXHIGHTSFO": "sf",
     "KXTEMPNYCH": "nyc",
+    "KXHIGHTHOU": "houston",
+    "KXHIGHTBOS": "boston",
+    "KXHIGHTATL": "atlanta",
+    "KXHIGHTDAL": "dallas",
+    "KXHIGHTPHX": "phoenix",
+    "KXHIGHTSEA": "seattle",
 }
 
 # Proven strategies get full Kelly, new ones get fractional Kelly
