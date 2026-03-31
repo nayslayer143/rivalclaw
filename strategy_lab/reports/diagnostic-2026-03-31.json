@@ -1,0 +1,382 @@
+{
+  "date": "2026-03-31",
+  "lookback_days": 14,
+  "event_count": 9334330,
+  "strategies": {
+    "hedge": {
+      "trade_count": 60,
+      "resolved": 60,
+      "win_rate": 0.31666666666666665,
+      "avg_pnl": 128.54887681693688,
+      "total_pnl": 7712.932609016212,
+      "sharpe": 3.014975654436153,
+      "max_drawdown": 87.87446322901442,
+      "abstain_rate": 1.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.31666666666666665,
+          "sharpe": 3.014975654436153,
+          "pnl": 7712.932609016212,
+          "trades": 60
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "fair_value_directional": {
+      "trade_count": 1655,
+      "resolved": 1654,
+      "win_rate": 0.34461910519951633,
+      "avg_pnl": 56.543359961828536,
+      "total_pnl": 93522.7173768644,
+      "sharpe": 1.8659544229533314,
+      "max_drawdown": 7224.568832893521,
+      "abstain_rate": 0.22034218897773192,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.34461910519951633,
+          "sharpe": 1.8659544229533314,
+          "pnl": 93522.7173768644,
+          "trades": 1655
+        }
+      },
+      "degradation": "parameter_drift"
+    },
+    "bracket_neighbor": {
+      "trade_count": 1227,
+      "resolved": 1212,
+      "win_rate": 0.2854785478547855,
+      "avg_pnl": -0.02843533943180118,
+      "total_pnl": -34.46363139134303,
+      "sharpe": -0.0026222548234055136,
+      "max_drawdown": 12830.536362287723,
+      "abstain_rate": 1.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.2854785478547855,
+          "sharpe": -0.0026222548234055136,
+          "pnl": -34.46363139134303,
+          "trades": 1227
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "closing_convergence": {
+      "trade_count": 163,
+      "resolved": 163,
+      "win_rate": 0.26380368098159507,
+      "avg_pnl": 3.2382308614973088,
+      "total_pnl": 527.8316304240614,
+      "sharpe": 0.5985609430649128,
+      "max_drawdown": 527.9928584611162,
+      "abstain_rate": 0.39760033098882913,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.26380368098159507,
+          "sharpe": 0.5985609430649128,
+          "pnl": 527.8316304240614,
+          "trades": 163
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "cross_strike_arb": {
+      "trade_count": 137,
+      "resolved": 113,
+      "win_rate": 0.37168141592920356,
+      "avg_pnl": -10.417125566597832,
+      "total_pnl": -1177.135189025555,
+      "sharpe": -2.8722945239225526,
+      "max_drawdown": 1513.7249783400316,
+      "abstain_rate": 1.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.37168141592920356,
+          "sharpe": -2.8722945239225526,
+          "pnl": -1177.135189025555,
+          "trades": 137
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "spot_momentum": {
+      "trade_count": 26,
+      "resolved": 26,
+      "win_rate": 0.5384615384615384,
+      "avg_pnl": 26.566468275057918,
+      "total_pnl": 690.7281751515059,
+      "sharpe": 12.61113401999572,
+      "max_drawdown": 21.94284701879758,
+      "abstain_rate": 0.37117903930131,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.5384615384615384,
+          "sharpe": 12.61113401999572,
+          "pnl": 690.7281751515059,
+          "trades": 26
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "expiry_acceleration": {
+      "trade_count": 54,
+      "resolved": 54,
+      "win_rate": 0.24074074074074073,
+      "avg_pnl": -32.18583045044449,
+      "total_pnl": -1738.0348443240027,
+      "sharpe": -4.955172889847685,
+      "max_drawdown": 1905.2008833707962,
+      "abstain_rate": 0.15925176946410516,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.24074074074074073,
+          "sharpe": -4.955172889847685,
+          "pnl": -1738.0348443240027,
+          "trades": 54
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "liquidity_fade": {
+      "trade_count": 107,
+      "resolved": 107,
+      "win_rate": 0.14018691588785046,
+      "avg_pnl": 16.218984729837356,
+      "total_pnl": 1735.431366092597,
+      "sharpe": 1.7220647930253004,
+      "max_drawdown": 414.84670998388106,
+      "abstain_rate": 0.14371859296482412,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.14018691588785046,
+          "sharpe": 1.7220647930253004,
+          "pnl": 1735.431366092597,
+          "trades": 107
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "mean_reversion": {
+      "trade_count": 21,
+      "resolved": 21,
+      "win_rate": 0.3333333333333333,
+      "avg_pnl": 0.7846589643911259,
+      "total_pnl": 16.477838252213644,
+      "sharpe": 0.16906088872831226,
+      "max_drawdown": 391.49117897179497,
+      "abstain_rate": 0.27011494252873564,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.3333333333333333,
+          "sharpe": 0.16906088872831226,
+          "pnl": 16.477838252213644,
+          "trades": 21
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "wipeout_reversal": {
+      "trade_count": 43,
+      "resolved": 42,
+      "win_rate": 0.3333333333333333,
+      "avg_pnl": 25.06404148460586,
+      "total_pnl": 1052.689742353446,
+      "sharpe": 2.4027949514829525,
+      "max_drawdown": 520.644374497761,
+      "abstain_rate": 0.2568306010928962,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.3333333333333333,
+          "sharpe": 2.4027949514829525,
+          "pnl": 1052.689742353446,
+          "trades": 43
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "polymarket_convergence": {
+      "trade_count": 27052,
+      "resolved": 27050,
+      "win_rate": 0.1430683918669131,
+      "avg_pnl": 3.6712273750117173,
+      "total_pnl": 99306.70049406696,
+      "sharpe": 0.5014312238850243,
+      "max_drawdown": 3392.9723926066654,
+      "abstain_rate": 0.28357314148681056,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.1430683918669131,
+          "sharpe": 0.5014312238850243,
+          "pnl": 99306.70049406696,
+          "trades": 27052
+        }
+      },
+      "degradation": "parameter_drift"
+    },
+    "forecast_delta": {
+      "trade_count": 161,
+      "resolved": 160,
+      "win_rate": 0.275,
+      "avg_pnl": -13.761343028884406,
+      "total_pnl": -2201.814884621505,
+      "sharpe": -1.93345498887391,
+      "max_drawdown": 4476.2215371260445,
+      "abstain_rate": 0.321999087174806,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.275,
+          "sharpe": -1.93345498887391,
+          "pnl": -2201.814884621505,
+          "trades": 161
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "election_field_arb": {
+      "trade_count": 756,
+      "resolved": 756,
+      "win_rate": 0.06084656084656084,
+      "avg_pnl": 0.14396304652016315,
+      "total_pnl": 108.83606316924335,
+      "sharpe": 0.3433548500231027,
+      "max_drawdown": 98.9799463819909,
+      "abstain_rate": 1.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.06084656084656084,
+          "sharpe": 0.3433548500231027,
+          "pnl": 108.83606316924335,
+          "trades": 756
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "pairs_trade": {
+      "trade_count": 170,
+      "resolved": 170,
+      "win_rate": 0.48823529411764705,
+      "avg_pnl": 21.852168331119326,
+      "total_pnl": 3714.8686162902854,
+      "sharpe": 0.9395134913092017,
+      "max_drawdown": 3161.59098045368,
+      "abstain_rate": 1.0,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.48823529411764705,
+          "sharpe": 0.9395134913092017,
+          "pnl": 3714.8686162902854,
+          "trades": 170
+        }
+      },
+      "degradation": "data_issue"
+    },
+    "time_decay": {
+      "trade_count": 19,
+      "resolved": 19,
+      "win_rate": 0.3157894736842105,
+      "avg_pnl": 45.65283161613312,
+      "total_pnl": 867.4038007065293,
+      "sharpe": 2.4322939578142306,
+      "max_drawdown": 920.5256362756743,
+      "abstain_rate": 0.19130434782608696,
+      "by_regime": {
+        "calm": {
+          "win_rate": 0.3157894736842105,
+          "sharpe": 2.4322939578142306,
+          "pnl": 867.4038007065293,
+          "trades": 19
+        }
+      },
+      "degradation": "data_issue"
+    }
+  },
+  "regime_performance": {
+    "calm": {
+      "trades": 31651,
+      "pnl": 204105.1691630257
+    }
+  },
+  "drift_flags": {},
+  "degradation_flags": {
+    "hedge": "data_issue",
+    "fair_value_directional": "parameter_drift",
+    "bracket_neighbor": "data_issue",
+    "closing_convergence": "data_issue",
+    "cross_strike_arb": "data_issue",
+    "spot_momentum": "data_issue",
+    "expiry_acceleration": "data_issue",
+    "liquidity_fade": "data_issue",
+    "mean_reversion": "data_issue",
+    "wipeout_reversal": "data_issue",
+    "polymarket_convergence": "parameter_drift",
+    "forecast_delta": "data_issue",
+    "election_field_arb": "data_issue",
+    "pairs_trade": "data_issue",
+    "time_decay": "data_issue"
+  },
+  "missed_opportunities": [
+    {
+      "market_id": "KXTEMPNYCH-26MAR2812-T41.99",
+      "price_move": 1.0,
+      "title": "Will the temp in NYC be above 41.99\u00b0 on Mar 28, 2026 at 12pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B2400",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B2380",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B2360",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B1980",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B1960",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2520-B1940",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 25, 2026 at 8pm EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2608-B2280",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 26, 2026 at 8am EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2608-B2260",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 26, 2026 at 8am EDT?"
+    },
+    {
+      "market_id": "KXETH-26MAR2608-B1880",
+      "price_move": 0.99,
+      "title": "Ethereum price at Mar 26, 2026 at 8am EDT?"
+    }
+  ],
+  "calibration": {
+    "total": 115933,
+    "correct": 14985,
+    "avg_confidence": 0.8604775020855019,
+    "actual_win_rate": 0.12925569078692004,
+    "overconfidence": 0.7312218112985819
+  },
+  "abstain_breakdown": {
+    "no strategy triggered": 42154,
+    "policy_block": 167834,
+    "confidence_below_threshold": 2257247,
+    "position_limit_reached": 1086326,
+    "exposure_cap": 53356
+  }
+}
