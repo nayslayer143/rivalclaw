@@ -59,6 +59,8 @@ async def wallet(source: str = Query("paper", pattern="^(paper|live)$")):
 
                 balance = starting_balance + closed_pnl
 
+                losses = total_trades - wins
+
                 return {
                     "balance": round(balance, 2),
                     "starting_balance": starting_balance,
@@ -66,6 +68,8 @@ async def wallet(source: str = Query("paper", pattern="^(paper|live)$")):
                     "open_positions": open_positions,
                     "win_rate": round(win_rate, 2),
                     "total_trades": total_trades,
+                    "wins": wins,
+                    "losses": losses,
                 }
             else:
                 # Live mode — compute from live_orders + account_snapshots
