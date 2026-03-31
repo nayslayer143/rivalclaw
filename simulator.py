@@ -229,6 +229,7 @@ def run_loop():
     import kalshi_feed
     import spot_feed
     import index_feed
+    import sentiment_feed
     import paper_wallet as wallet
     import trading_brain as brain
     import graduation as grad
@@ -384,6 +385,35 @@ def run_loop():
     # Emit regime classification for Strategy Lab
     elog.regime(label=regime_str, confidence=regime.get("confidence", 0.5),
                 features={"scores": scores, "blocked": blocked})
+
+    # 3c. Sentiment signal (paper trades only — experimental)
+    try:
+        sentiment = sentiment_feed.get_signals()
+        sentiment_applied = 0
+        for d in decisions:
+            # Only apply to paper path — live execution ignores this
+            series = d.market_id.split("-")[0] if d.market_id else ""
+            # Map series to asset
+            asset = None
+            if "BTC" in series: asset = "bitcoin"
+            elif "ETH" in series: asset = "ethereum"
+            elif "BNB" in series: asset = "binancecoin"
+            if asset and asset in sentiment:
+                mod = sentiment[asset]["modifier"]
+                if mod != 1.0:
+                    d.confidence *= mod
+                    d.amount_usd *= mod
+                    if d.metadata is None:
+                        d.metadata = {}
+                    d.metadata["sentiment_mod"] = mod
+                    d.metadata["sentiment_reason"] = sentiment[asset]["reason"]
+                    sentiment_applied += 1
+        if sentiment_applied:
+            fng = sentiment.get("fear_greed", {})
+            fng_str = f"FNG={fng.get('value', '?')}" if fng else ""
+            print(f"[rivalclaw/sentiment] Applied to {sentiment_applied} trades {fng_str}")
+    except Exception as e:
+        print(f"[rivalclaw/sentiment] Error (non-fatal): {e}")
 
     # 4. Execute trades (timed)
     t0 = time.time()
