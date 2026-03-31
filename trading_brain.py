@@ -120,26 +120,62 @@ CRYPTO_VOL = {
     "ripple": float(os.environ.get("RIVALCLAW_VOL_RIPPLE", "0.80")),
 }
 
+# Equity index annualized volatility (much lower than crypto)
+INDEX_VOL = {
+    "sp500": float(os.environ.get("RIVALCLAW_VOL_SP500", "0.17")),       # ~15-20%
+    "nasdaq100": float(os.environ.get("RIVALCLAW_VOL_NASDAQ100", "0.22")),  # ~20-25%
+}
+
 SERIES_TO_UNDERLYING = {
     "KXDOGE15M": "dogecoin", "KXADA15M": "cardano",
     "KXBNB15M": "binancecoin", "KXBCH15M": "bitcoin-cash",
+    "KXBTC15M": "bitcoin", "KXETH15M": "ethereum",
     "KXBTC": "bitcoin", "KXBTCMAXD": "bitcoin", "KXETH": "ethereum",
     "KXBTCD": "bitcoin", "KXETHD": "ethereum",
     "KXSOLD": "solana",
     # KXXRPD removed: 0W/4L, reversal blocked by price filter, model misprices XRP vol
 }
 
-# Weather series → city mapping (for weather_feed)
+# Map Kalshi index series to index_feed IDs (for Yahoo Finance spot prices)
+SERIES_TO_INDEX = {
+    "KXINXU": "sp500",
+    "KXNASDAQ100U": "nasdaq100",
+}
+
+# Weather series → (city, temp_type) mapping (for weather_feed)
+# temp_type: "high" uses forecast high, "low" uses forecast low
 SERIES_TO_WEATHER = {
-    "KXHIGHTDC": "dc",
-    "KXHIGHTSFO": "sf",
-    "KXTEMPNYCH": "nyc",
-    "KXHIGHTHOU": "houston",
-    "KXHIGHTBOS": "boston",
-    "KXHIGHTATL": "atlanta",
-    "KXHIGHTDAL": "dallas",
-    "KXHIGHTPHX": "phoenix",
-    "KXHIGHTSEA": "seattle",
+    # Original 9 — high temp
+    "KXHIGHTDC": ("dc", "high"),
+    "KXHIGHTSFO": ("sf", "high"),
+    "KXTEMPNYCH": ("nyc", "high"),
+    "KXHIGHTHOU": ("houston", "high"),
+    "KXHIGHTBOS": ("boston", "high"),
+    "KXHIGHTATL": ("atlanta", "high"),
+    "KXHIGHTDAL": ("dallas", "high"),
+    "KXHIGHTPHX": ("phoenix", "high"),
+    "KXHIGHTSEA": ("seattle", "high"),
+    # Expansion: 12 new high-temp cities (verified on Kalshi 2026-03-30)
+    "KXHIGHLAX": ("la", "high"),
+    "KXHIGHMIA": ("miami", "high"),
+    "KXHIGHPHIL": ("philadelphia", "high"),
+    "KXHIGHCHI": ("chicago", "high"),
+    "KXHIGHNY": ("nyc", "high"),
+    "KXHIGHAUS": ("austin", "high"),
+    "KXHIGHDEN": ("denver", "high"),
+    "KXHIGHTLV": ("lasvegas", "high"),
+    "KXHIGHTSATX": ("sanantonio", "high"),
+    "KXHIGHTMIN": ("minneapolis", "high"),
+    "KXHIGHTOKC": ("okc", "high"),
+    "KXHIGHTNOLA": ("neworleans", "high"),
+    # Low-temp series (7 cities confirmed active on Kalshi 2026-03-30)
+    "KXLOWTNYC": ("nyc", "low"),
+    "KXLOWTLAX": ("la", "low"),
+    "KXLOWTMIA": ("miami", "low"),
+    "KXLOWTCHI": ("chicago", "low"),
+    "KXLOWTPHIL": ("philadelphia", "low"),
+    "KXLOWTAUS": ("austin", "low"),
+    "KXLOWTDEN": ("denver", "low"),
 }
 
 # Proven strategies get full Kelly, new ones get fractional Kelly
@@ -235,11 +271,18 @@ def _parse_expiry_minutes(market: dict) -> float | None:
         return None
 
 def _find_underlying(market: dict) -> str | None:
+    """Match a market to its underlying asset ID (crypto or index).
+    Returns the ID used to look up spot prices and volatility."""
     event_ticker = market.get("event_ticker", "")
     market_id = market.get("market_id", "")
+    # Check crypto first
     for series, crypto_id in SERIES_TO_UNDERLYING.items():
         if series in event_ticker or series in market_id:
             return crypto_id
+    # Check index series
+    for series, index_id in SERIES_TO_INDEX.items():
+        if series in event_ticker or series in market_id:
+            return index_id
     return None
 
 def _compute_fair_value(spot, strike, minutes, vol, strike_type="greater_or_equal"):
@@ -354,9 +397,18 @@ def _bucket_multiplier(entry_price):
     return BUCKET_EDGE_MULTIPLIER["neutral"]
 
 
+def _get_static_vol(underlying_id):
+    """Get static (baseline) volatility for any underlying asset."""
+    if underlying_id in CRYPTO_VOL:
+        return CRYPTO_VOL[underlying_id]
+    if underlying_id in INDEX_VOL:
+        return INDEX_VOL[underlying_id]
+    return 0.70  # fallback
+
+
 def _get_realtime_vol(underlying_id):
     """Compute realized vol from spot_prices if enough data, else use static."""
-    static_vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    static_vol = _get_static_vol(underlying_id)
     try:
         import sqlite3
         db = os.environ.get("RIVALCLAW_DB_PATH", str(Path(__file__).parent / "rivalclaw.db"))
@@ -382,22 +434,33 @@ def _get_realtime_vol(underlying_id):
 
 
 def _find_weather_city(market):
-    """Match a Kalshi market to a weather city."""
+    """Match a Kalshi market to a weather city and temp type.
+    Returns (city, temp_type) tuple or None.
+    temp_type is "high" or "low".
+    """
     event_ticker = market.get("event_ticker", "")
     market_id = market.get("market_id", "")
-    for series, city in SERIES_TO_WEATHER.items():
+    for series, city_info in SERIES_TO_WEATHER.items():
         if series in event_ticker or series in market_id:
-            return city
+            # city_info is (city, temp_type) tuple
+            return city_info
     return None
 
 
-def _get_weather_spot_and_vol(city):
-    """Get forecast high (spot equivalent) and forecast error (vol equivalent) for a city."""
+def _get_weather_spot_and_vol(city, temp_type="high"):
+    """Get forecast temp (spot equivalent) and forecast error (vol equivalent) for a city.
+    temp_type: "high" returns forecast high, "low" returns forecast low.
+    """
     try:
         import weather_feed
         forecast = weather_feed.get_city_forecast(city)
         if forecast:
-            return forecast["high_f"], forecast["forecast_error"]
+            if temp_type == "low":
+                spot = forecast.get("low_f")
+            else:
+                spot = forecast.get("high_f")
+            if spot is not None:
+                return spot, forecast["forecast_error"]
     except Exception:
         pass
     return None, None
@@ -413,15 +476,16 @@ def _check_fair_value(market, balance, spot_prices):
 
     # Determine underlying: crypto or weather?
     underlying_id = _find_underlying(market)
-    weather_city = _find_weather_city(market) if not underlying_id else None
+    weather_info = _find_weather_city(market) if not underlying_id else None
 
     if underlying_id:
         spot = spot_prices.get(underlying_id)
         if not spot or spot <= 0:
             return None
         vol = _get_realtime_vol(underlying_id)
-    elif weather_city:
-        spot, vol = _get_weather_spot_and_vol(weather_city)
+    elif weather_info:
+        weather_city, weather_temp_type = weather_info
+        spot, vol = _get_weather_spot_and_vol(weather_city, weather_temp_type)
         if not spot:
             return None
         # Weather "vol" is forecast error in °F, but _compute_fair_value expects
@@ -781,7 +845,7 @@ def _check_mean_reversion(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    vol = _get_static_vol(underlying_id)
     fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
     if fair is None:
         return None
@@ -859,7 +923,7 @@ def _check_time_decay(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    vol = _get_static_vol(underlying_id)
     fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
     if fair is None:
         return None
@@ -929,7 +993,7 @@ def _check_vol_skew(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    realized_vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    realized_vol = _get_static_vol(underlying_id)
     yes_price = market.get("yes_price", 0) or 0
     if yes_price <= 0.03 or yes_price >= 0.97:
         return None
@@ -1683,7 +1747,7 @@ def _check_vol_regime(market, balance, spot_prices):
 
     # Compare recent vol (last 30min) vs baseline vol
     recent_vol = _get_realtime_vol(underlying_id)  # Last 200 snapshots
-    baseline_vol = CRYPTO_VOL.get(underlying_id, 0.70)
+    baseline_vol = _get_static_vol(underlying_id)
 
     vol_spike = recent_vol / baseline_vol if baseline_vol > 0 else 1.0
     if vol_spike < 1.5:  # Need 50%+ vol increase
@@ -1898,11 +1962,12 @@ def _check_forecast_delta(market, balance):
     """
     if market.get("venue") != "kalshi":
         return None
-    weather_city = _find_weather_city(market)
-    if not weather_city:
+    weather_info = _find_weather_city(market)
+    if not weather_info:
         return None
+    weather_city, weather_temp_type = weather_info
 
-    spot, vol = _get_weather_spot_and_vol(weather_city)
+    spot, vol = _get_weather_spot_and_vol(weather_city, weather_temp_type)
     if not spot:
         return None
 
@@ -1957,7 +2022,7 @@ def _check_forecast_delta(market, balance):
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
-        reasoning=f"ForecastDelta: {weather_city} forecast={spot:.0f}°F fair={fair:.3f} mkt={yes_price:.3f} edge={edge:.3f}",
+        reasoning=f"ForecastDelta: {weather_city}/{weather_temp_type} forecast={spot:.0f}°F fair={fair:.3f} mkt={yes_price:.3f} edge={edge:.3f}",
         strategy="forecast_delta", amount_usd=amount, entry_price=entry_price,
         shares=amount / entry_price if entry_price > 0 else 0,
         decision_generated_at_ms=time.time() * 1000,

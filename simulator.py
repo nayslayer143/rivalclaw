@@ -228,6 +228,7 @@ def run_loop():
     import polymarket_feed as poly_feed
     import kalshi_feed
     import spot_feed
+    import index_feed
     import paper_wallet as wallet
     import trading_brain as brain
     import graduation as grad
@@ -330,21 +331,26 @@ def run_loop():
     else:
         state = wallet.get_state()
     spot_prices = spot_feed.get_spot_prices()
+    # Merge equity index prices (Yahoo Finance) into spot_prices
+    index_prices = index_feed.get_index_prices()
+    spot_prices.update(index_prices)
     # Log spot prices for realized vol computation (self-tuner)
     if spot_prices:
         conn = _get_conn()
         try:
-            for crypto_id, price in spot_prices.items():
+            for asset_id, price in spot_prices.items():
                 conn.execute(
                     "INSERT INTO spot_prices (crypto_id, price_usd, fetched_at) VALUES (?,?,?)",
-                    (crypto_id, price, cycle_started_iso))
+                    (asset_id, price, cycle_started_iso))
             conn.commit()
         finally:
             conn.close()
+    n_crypto = len(spot_prices) - len(index_prices)
+    n_index = len(index_prices)
     print(f"[rivalclaw] Wallet: ${state['balance']:.2f} | "
           f"Positions: {state['open_positions']} | "
           f"Win rate: {state['win_rate']*100:.0f}% | "
-          f"Spots: {len(spot_prices)} cryptos")
+          f"Spots: {n_crypto} crypto + {n_index} index")
 
     # 3. Analyze all markets with all strategies (timed)
     t0 = time.time()

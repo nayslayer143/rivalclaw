@@ -406,6 +406,7 @@ Either result is valuable.
 ├── venv/                  <- isolated Python environment
 ├── kalshi_executor.py     <- Kalshi order submission, polling, account sync
 ├── execution_router.py    <- pre-flight safety checks, shadow/live routing
+├── index_feed.py          <- Yahoo Finance spot prices for S&P 500 + Nasdaq-100
 └── tests/                 <- unit tests
 ```
 

@@ -16,6 +16,7 @@ import requests
 # DC: WFO=LWX, gridX=97, gridY=71
 # SF: WFO=MTR, gridX=85, gridY=105
 NWS_POINTS = {
+    # Original 9 cities
     "dc": "https://api.weather.gov/gridpoints/LWX/97,71/forecast",
     "sf": "https://api.weather.gov/gridpoints/MTR/85,105/forecast",
     "nyc": "https://api.weather.gov/gridpoints/OKX/33,37/forecast",
@@ -25,19 +26,54 @@ NWS_POINTS = {
     "dallas": "https://api.weather.gov/gridpoints/FWD/89,104/forecast",
     "phoenix": "https://api.weather.gov/gridpoints/PSR/159,58/forecast",
     "seattle": "https://api.weather.gov/gridpoints/SEW/125,68/forecast",
+    # Expansion: 12 new cities (NWS gridpoints verified via points API 2026-03-30)
+    "la": "https://api.weather.gov/gridpoints/LOX/155,45/forecast",
+    "miami": "https://api.weather.gov/gridpoints/MFL/110,50/forecast",
+    "philadelphia": "https://api.weather.gov/gridpoints/PHI/50,76/forecast",
+    "chicago": "https://api.weather.gov/gridpoints/LOT/76,73/forecast",
+    "austin": "https://api.weather.gov/gridpoints/EWX/156,91/forecast",
+    "denver": "https://api.weather.gov/gridpoints/BOU/63,62/forecast",
+    "lasvegas": "https://api.weather.gov/gridpoints/VEF/123,98/forecast",
+    "sanantonio": "https://api.weather.gov/gridpoints/EWX/126,54/forecast",
+    "minneapolis": "https://api.weather.gov/gridpoints/MPX/108,72/forecast",
+    "okc": "https://api.weather.gov/gridpoints/OUN/97,94/forecast",
+    "neworleans": "https://api.weather.gov/gridpoints/LIX/68,88/forecast",
 }
 
-# Map Kalshi series to city
+# Map Kalshi series to (city, temp_type)
+# temp_type: "high" uses high_f forecast, "low" uses low_f forecast
 SERIES_TO_CITY = {
-    "KXHIGHTDC": "dc",
-    "KXHIGHTSFO": "sf",
-    "KXTEMPNYCH": "nyc",
-    "KXHIGHTHOU": "houston",
-    "KXHIGHTBOS": "boston",
-    "KXHIGHTATL": "atlanta",
-    "KXHIGHTDAL": "dallas",
-    "KXHIGHTPHX": "phoenix",
-    "KXHIGHTSEA": "seattle",
+    # Original 9 cities — high temp
+    "KXHIGHTDC": ("dc", "high"),
+    "KXHIGHTSFO": ("sf", "high"),
+    "KXTEMPNYCH": ("nyc", "high"),
+    "KXHIGHTHOU": ("houston", "high"),
+    "KXHIGHTBOS": ("boston", "high"),
+    "KXHIGHTATL": ("atlanta", "high"),
+    "KXHIGHTDAL": ("dallas", "high"),
+    "KXHIGHTPHX": ("phoenix", "high"),
+    "KXHIGHTSEA": ("seattle", "high"),
+    # Expansion: 12 new cities — high temp (tickers verified on Kalshi 2026-03-30)
+    "KXHIGHLAX": ("la", "high"),
+    "KXHIGHMIA": ("miami", "high"),
+    "KXHIGHPHIL": ("philadelphia", "high"),
+    "KXHIGHCHI": ("chicago", "high"),
+    "KXHIGHNY": ("nyc", "high"),          # NYC daily high (vs KXTEMPNYCH hourly)
+    "KXHIGHAUS": ("austin", "high"),
+    "KXHIGHDEN": ("denver", "high"),
+    "KXHIGHTLV": ("lasvegas", "high"),
+    "KXHIGHTSATX": ("sanantonio", "high"),
+    "KXHIGHTMIN": ("minneapolis", "high"),
+    "KXHIGHTOKC": ("okc", "high"),
+    "KXHIGHTNOLA": ("neworleans", "high"),
+    # Low-temp series (7 cities confirmed active on Kalshi 2026-03-30)
+    "KXLOWTNYC": ("nyc", "low"),
+    "KXLOWTLAX": ("la", "low"),
+    "KXLOWTMIA": ("miami", "low"),
+    "KXLOWTCHI": ("chicago", "low"),
+    "KXLOWTPHIL": ("philadelphia", "low"),
+    "KXLOWTAUS": ("austin", "low"),
+    "KXLOWTDEN": ("denver", "low"),
 }
 
 # Forecast error std dev in °F (same-day NWS forecast accuracy)
@@ -70,30 +106,42 @@ def get_forecasts() -> dict:
             if not periods:
                 continue
 
-            # First period is current/today
+            # NWS alternates daytime (high) and nighttime (low) periods.
+            # Extract both high and low from the first few periods.
             today = periods[0]
             temp = today.get("temperature")
             if temp is None:
                 continue
 
-            # NWS gives daytime high or nighttime low depending on time
             is_daytime = today.get("isDaytime", True)
+            high_f = None
+            low_f = None
+
             if is_daytime:
-                result[city] = {
-                    "high_f": float(temp),
-                    "current_f": float(temp),  # Best estimate
-                    "forecast_error": FORECAST_ERROR_F,
-                }
+                high_f = float(temp)
+                # Next period should be tonight's low
+                if len(periods) > 1 and not periods[1].get("isDaytime", True):
+                    low_temp = periods[1].get("temperature")
+                    if low_temp is not None:
+                        low_f = float(low_temp)
             else:
-                # Nighttime — use next daytime period for high
-                if len(periods) > 1:
-                    tomorrow = periods[1]
-                    high = tomorrow.get("temperature", temp)
-                    result[city] = {
-                        "high_f": float(high),
-                        "current_f": float(temp),
-                        "forecast_error": FORECAST_ERROR_F,
-                    }
+                low_f = float(temp)
+                # Next period should be tomorrow's high
+                if len(periods) > 1 and periods[1].get("isDaytime", True):
+                    high_temp = periods[1].get("temperature")
+                    if high_temp is not None:
+                        high_f = float(high_temp)
+
+            # Need at least a high to be useful
+            if high_f is None and low_f is None:
+                continue
+
+            result[city] = {
+                "high_f": high_f,
+                "low_f": low_f,
+                "current_f": float(temp),
+                "forecast_error": FORECAST_ERROR_F,
+            }
         except Exception as e:
             print(f"[rivalclaw/weather] NWS error for {city}: {e}")
 

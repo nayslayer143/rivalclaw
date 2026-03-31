@@ -31,14 +31,25 @@ CACHE_MAX_AGE_HOURS = 0  # Always fetch fresh — we need current data for all s
 FAST_SERIES = [
     # 15-min crypto (fastest feedback)
     "KXDOGE15M", "KXADA15M", "KXBNB15M", "KXBCH15M",
+    "KXBTC15M", "KXETH15M",
     # Hourly crypto range/bracket (96%+ paper WR on NO fair_value)
     "KXBTC", "KXETH", "KXBTCMAXD",
     # Hourly crypto directional above/below (new — high volume)
     "KXBTCD", "KXETHD", "KXSOLD", "KXXRPD",
-    # Weather (resolves same day, real volume — 9 cities)
+    # Hourly index (Yahoo Finance spot feed — high volume)
+    "KXINXU", "KXNASDAQ100U",
+    # Weather high temp (resolves same day, real volume — 21 cities)
     "KXHIGHTDC", "KXHIGHTSFO", "KXTEMPNYCH",
     "KXHIGHTHOU", "KXHIGHTBOS", "KXHIGHTATL",
     "KXHIGHTDAL", "KXHIGHTPHX", "KXHIGHTSEA",
+    # Expansion: 12 new high-temp cities (verified 2026-03-30)
+    "KXHIGHLAX", "KXHIGHMIA", "KXHIGHPHIL", "KXHIGHCHI",
+    "KXHIGHNY", "KXHIGHAUS", "KXHIGHDEN",
+    "KXHIGHTLV", "KXHIGHTSATX", "KXHIGHTMIN",
+    "KXHIGHTOKC", "KXHIGHTNOLA",
+    # Weather low temp (7 cities confirmed active on Kalshi 2026-03-30)
+    "KXLOWTNYC", "KXLOWTLAX", "KXLOWTMIA", "KXLOWTCHI",
+    "KXLOWTPHIL", "KXLOWTAUS", "KXLOWTDEN",
     # Commodities + FX (daily)
     "KXGOLDD", "KXSILVERD", "KXTNOTED", "KXUSDJPY",
     # Index (daily)
@@ -51,16 +62,52 @@ SERIES_TO_UNDERLYING = {
     "KXADA15M": "cardano",
     "KXBNB15M": "binancecoin",
     "KXBCH15M": "bitcoin-cash",
+    "KXBTC15M": "bitcoin",
+    "KXETH15M": "ethereum",
     "KXBTC": "bitcoin",
     "KXBTCMAXD": "bitcoin",
     "KXETH": "ethereum",
 }
 
+# Map series prefix to index ID (for index_feed)
+SERIES_TO_INDEX = {
+    "KXINXU": "sp500",
+    "KXNASDAQ100U": "nasdaq100",
+}
+
 # Map series to weather city (for weather_feed)
 SERIES_TO_WEATHER = {
+    # Original 9 — high temp
     "KXHIGHTDC": "dc",
     "KXHIGHTSFO": "sf",
     "KXTEMPNYCH": "nyc",
+    "KXHIGHTHOU": "houston",
+    "KXHIGHTBOS": "boston",
+    "KXHIGHTATL": "atlanta",
+    "KXHIGHTDAL": "dallas",
+    "KXHIGHTPHX": "phoenix",
+    "KXHIGHTSEA": "seattle",
+    # Expansion: 12 new high-temp cities
+    "KXHIGHLAX": "la",
+    "KXHIGHMIA": "miami",
+    "KXHIGHPHIL": "philadelphia",
+    "KXHIGHCHI": "chicago",
+    "KXHIGHNY": "nyc",
+    "KXHIGHAUS": "austin",
+    "KXHIGHDEN": "denver",
+    "KXHIGHTLV": "lasvegas",
+    "KXHIGHTSATX": "sanantonio",
+    "KXHIGHTMIN": "minneapolis",
+    "KXHIGHTOKC": "okc",
+    "KXHIGHTNOLA": "neworleans",
+    # Low-temp series (7 cities)
+    "KXLOWTNYC": "nyc",
+    "KXLOWTLAX": "la",
+    "KXLOWTMIA": "miami",
+    "KXLOWTCHI": "chicago",
+    "KXLOWTPHIL": "philadelphia",
+    "KXLOWTAUS": "austin",
+    "KXLOWTDEN": "denver",
 }
 
 _warned_no_key = False
