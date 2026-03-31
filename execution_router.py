@@ -69,6 +69,56 @@ _submitted_market_ids: set[str] = set()
 # DB path override — tests can set this to a temp file
 _db_path: str | None = None
 
+
+# ---------------------------------------------------------------------------
+# Maker mode config
+# ---------------------------------------------------------------------------
+
+
+def _get_maker_config() -> dict:
+    """Read maker config from env (fresh each call to pick up .env changes)."""
+    return {
+        "enabled": os.environ.get("RIVALCLAW_MAKER_ENABLED", "0") == "1",
+        "offset_pct": float(os.environ.get("RIVALCLAW_MAKER_OFFSET_PCT", "0.10")),
+        "patience_sec": float(os.environ.get("RIVALCLAW_MAKER_PATIENCE_SEC", "120")),
+        "max_resting": int(os.environ.get("RIVALCLAW_MAKER_MAX_RESTING", "5")),
+        "min_fill_rate": float(os.environ.get("RIVALCLAW_MAKER_MIN_FILL_RATE", "0.30")),
+    }
+
+
+def _should_use_maker(ticker: str, maker_cfg: dict) -> bool:
+    """Decide whether to use maker mode for this ticker."""
+    if not maker_cfg["enabled"]:
+        return False
+    if executor.get_resting_count() >= maker_cfg["max_resting"]:
+        return False
+    series_prefix = ticker.split("-")[0]
+    fill_rate = executor.get_maker_fill_rate(series_prefix)
+    if fill_rate < maker_cfg["min_fill_rate"]:
+        logger.info("Maker disabled for %s: fill rate %.0f%% < %.0f%%",
+                     series_prefix, fill_rate * 100, maker_cfg["min_fill_rate"] * 100)
+        return False
+    return True
+
+
+def _has_filled_order_for_ticker(ticker: str) -> bool:
+    """Check if a FILLED (not resting) live order exists for this ticker.
+    Used in maker mode where resting orders are expected and allowed.
+    Fails CLOSED — returns True on error."""
+    db = _db_path or str(executor.DB_PATH)
+    try:
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT 1 FROM live_orders WHERE ticker=? AND mode='live' AND status='filled' LIMIT 1",
+            (ticker,),
+        ).fetchone()
+        conn.close()
+        return row is not None
+    except Exception as e:
+        logger.warning("Failed to check filled orders for %s: %s — blocking", ticker, e)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -247,13 +297,17 @@ def preflight_check(
     if not any(ticker.startswith(prefix) for prefix in cfg["allowed_series"]):
         return {"passed": False, "reason": "series_not_allowed"}
 
-    # 8a. Anti-stacking — reject if ANY live order exists for this market (any side)
+    # 8a. Anti-stacking — different logic for maker vs taker
     if ticker in _submitted_market_ids:
         return {"passed": False, "reason": "already_submitted"}
-    # DB check catches orders from previous process invocations (cron restarts)
-    # Includes pending, resting, AND filled — filled orders are real positions
-    if _has_any_live_order_for_ticker(ticker):
-        return {"passed": False, "reason": "already_submitted"}
+    # Maker mode: only block on filled orders (resting is expected and managed)
+    # Taker mode: block on any active order (filled, resting, pending)
+    if hasattr(decision, '_order_mode') and decision._order_mode == "maker":
+        if _has_filled_order_for_ticker(ticker):
+            return {"passed": False, "reason": "already_submitted"}
+    else:
+        if _has_any_live_order_for_ticker(ticker):
+            return {"passed": False, "reason": "already_submitted"}
 
     # 8b. Block YES on 15-min contracts — live WR is ~9%, not viable
     if cfg["block_15m_yes"] and "15M" in ticker and decision.direction == "YES":
@@ -337,6 +391,23 @@ def route_trade(
     # ---- Handle cycle reset ----
     if cycle_id and cycle_id != _current_cycle_id:
         reset_cycle(cycle_id)
+
+    # ---- Maker mode: adjust entry price for better fills ----
+    maker_cfg = _get_maker_config()
+    order_mode = "taker"
+    brain_price = decision.entry_price  # Save original for tracking
+
+    if _should_use_maker(ticker, maker_cfg):
+        order_mode = "maker"
+        maker_entry = decision.entry_price * (1 - maker_cfg["offset_pct"])
+        decision.entry_price = max(maker_entry, 0.08)
+        # Cancel any existing resting order on this ticker before posting new one
+        cancelled = executor.cancel_resting_for_ticker(ticker)
+        if cancelled:
+            logger.info("Cancelled %d resting order(s) for %s before new maker quote", cancelled, ticker)
+
+    # Tag decision so preflight_check can use maker-specific anti-stacking
+    decision._order_mode = order_mode
 
     # ---- Run pre-flight checks ----
     check = preflight_check(
@@ -474,16 +545,27 @@ def route_trade(
         cycle_id=cycle_id,
         strategy=decision.strategy,
         market_question=decision.question,
+        order_mode=order_mode,
+        brain_price=brain_price,
     )
 
     _cycle_order_count += 1
     _hour_order_count += 1
 
-    # Poll for fill
-    fill_result = executor.poll_order_status(kalshi_order_id)
+    # Poll for fill — maker uses patience window, taker uses fast poll
+    submit_time = time.time()
+    if order_mode == "maker":
+        fill_result = executor.poll_or_cancel(
+            kalshi_order_id,
+            patience_sec=maker_cfg["patience_sec"],
+            poll_interval=10.0,
+        )
+    else:
+        fill_result = executor.poll_order_status(kalshi_order_id)
     fill_status = fill_result.get("status", "unknown")
     fill_price = fill_result.get("yes_price", payload["yes_price"])
     fill_count = fill_result.get("count", decision.shares)
+    fill_time_sec = time.time() - submit_time
 
     executor.update_order_status(
         order_id,
@@ -506,9 +588,28 @@ def route_trade(
         live_amount_usd=live_amount_usd,
     )
 
+    # Track maker savings
+    if order_mode == "maker" and fill_status == "executed":
+        if side == "no":
+            actual_cost = (100 - fill_price) / 100.0
+        else:
+            actual_cost = fill_price / 100.0
+        savings = brain_price - actual_cost
+        try:
+            conn = executor._get_conn()
+            conn.execute(
+                "UPDATE live_orders SET maker_savings=?, fill_time_sec=? WHERE id=?",
+                (savings, fill_time_sec, order_id),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning("Failed to log maker savings: %s", e)
+
+    mode_tag = f" [{order_mode}]" if order_mode == "maker" else ""
     send_live_alert(
         "order_filled" if fill_status == "executed" else "order_submitted",
-        f"{ticker}: {fill_status} @ {fill_price}c x{fill_count}",
+        f"{ticker}: {fill_status} @ {fill_price}c x{fill_count}{mode_tag}",
     )
 
     return {

@@ -131,6 +131,8 @@ def log_order(
     cycle_id: str | None = None,
     strategy: str | None = None,
     market_question: str | None = None,
+    order_mode: str = "taker",
+    brain_price: float | None = None,
 ) -> int:
     """Insert a row into live_orders. Returns the row id."""
     if client_order_id is None:
@@ -144,14 +146,15 @@ def log_order(
             INSERT INTO live_orders
             (intent_id, client_order_id, kalshi_order_id, ticker, action, side,
              count, yes_price, order_type, status, submitted_at, mode,
-             cycle_id, strategy, market_question)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+             cycle_id, strategy, market_question, order_mode, brain_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 intent_id, client_order_id, kalshi_order_id,
                 ticker, action, side, count, yes_price_cents,
                 order_type, now, mode,
                 cycle_id, strategy, market_question,
+                order_mode, brain_price,
             ),
         )
         conn.commit()
@@ -384,6 +387,71 @@ def cancel_order(kalshi_order_id: str) -> dict:
         return {"error": "request_failed", "detail": str(e)}
 
 
+def poll_or_cancel(
+    kalshi_order_id: str,
+    patience_sec: float = 120,
+    poll_interval: float = 10.0,
+) -> dict:
+    """Poll a resting order for fills. Cancel if not filled within patience window.
+
+    Returns the final order status dict. If cancelled due to timeout,
+    status will be 'cancelled_timeout'.
+    """
+    deadline = time.time() + patience_sec
+    last_result: dict = {}
+
+    while time.time() < deadline:
+        result = poll_order_status(kalshi_order_id, max_polls=1, interval=0)
+        last_result = result
+        status = result.get("status", "")
+        if status in ("executed", "canceled", "cancelled"):
+            return result
+        if "error" in result:
+            return result
+        time.sleep(poll_interval)
+
+    # Timed out — cancel the resting order
+    cancel_result = cancel_order(kalshi_order_id)
+    if "error" in cancel_result:
+        logger.warning("Failed to cancel timed-out order %s: %s", kalshi_order_id, cancel_result)
+    return {"status": "cancelled_timeout", "order_id": kalshi_order_id, "last_poll": last_result}
+
+
+def cancel_resting_for_ticker(ticker: str) -> int:
+    """Cancel all resting orders for a given ticker. Returns count cancelled."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT kalshi_order_id FROM live_orders "
+            "WHERE ticker=? AND mode='live' AND status='resting' AND kalshi_order_id IS NOT NULL",
+            (ticker,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    cancelled = 0
+    for row in rows:
+        oid = row["kalshi_order_id"]
+        result = cancel_order(oid)
+        if "error" not in result:
+            update_order_status_by_kalshi_id(oid, "cancelled")
+            cancelled += 1
+    return cancelled
+
+
+def update_order_status_by_kalshi_id(kalshi_order_id: str, status: str):
+    """Update live_orders status by Kalshi order ID."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE live_orders SET status=? WHERE kalshi_order_id=?",
+            (status, kalshi_order_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def batch_cancel_orders() -> dict:
     """DELETE all resting orders."""
     path = "/portfolio/orders"
@@ -483,6 +551,54 @@ def reconcile_resting_orders() -> int:
     finally:
         conn.close()
     return updated
+
+
+def migrate_maker_columns():
+    """Add maker tracking columns to live_orders if not present."""
+    conn = _get_conn()
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(live_orders)").fetchall()}
+        if "order_mode" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN order_mode TEXT DEFAULT 'taker'")
+        if "brain_price" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN brain_price REAL")
+        if "maker_savings" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN maker_savings REAL")
+        if "fill_time_sec" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN fill_time_sec REAL")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_maker_fill_rate(series_prefix: str, lookback: int = 20) -> float:
+    """Get rolling fill rate for maker orders on a series. Returns 0.0-1.0."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT status FROM live_orders "
+            "WHERE order_mode='maker' AND ticker LIKE ? "
+            "ORDER BY rowid DESC LIMIT ?",
+            (f"{series_prefix}%", lookback),
+        ).fetchall()
+        if not rows:
+            return 1.0  # No history — assume maker is viable
+        filled = sum(1 for r in rows if r["status"] == "filled")
+        return filled / len(rows)
+    finally:
+        conn.close()
+
+
+def get_resting_count() -> int:
+    """Count currently resting live orders."""
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM live_orders WHERE mode='live' AND status='resting'"
+        ).fetchone()
+        return row["cnt"] if row else 0
+    finally:
+        conn.close()
 
 
 def sync_account() -> dict:
