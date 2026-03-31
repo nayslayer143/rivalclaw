@@ -1,0 +1,9 @@
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+[dispatcher] RivalClaw dispatcher started (PID 24969)
+[dispatcher] Bot token: ...JH-01A
+[dispatcher] Chat ID: 1450469911
+[dispatcher] DB: /Users/nayslayer/rivalclaw/rivalclaw.db
+[dispatcher] Ollama: http://localhost:11434
+[dispatcher] Fast: qwen2.5:7b | Deep: qwen2.5:14b
+[dispatcher] Polling @rivalclaw_bot (offset=168947332)...
