@@ -338,10 +338,12 @@ def preflight_check(
                 "reason": f"price_deviation ({deviation:.2%} > {cfg['max_price_deviation']:.0%})",
             }
 
-    # 10. Staleness check — currently disabled (stale_seconds never passed by caller)
-    # TODO: wire stale_seconds from market fetch timestamp through protocol_adapter
-    # if stale_seconds >= _STALE_THRESHOLD_SECONDS:
-    #     return {"passed": False, "reason": "stale_data"}
+    # 10. Staleness check — reject if decision was generated too long ago
+    decision_age_ms = getattr(decision, "decision_generated_at_ms", 0)
+    if decision_age_ms > 0:
+        age_seconds = (time.time() * 1000 - decision_age_ms) / 1000.0
+        if age_seconds >= _STALE_THRESHOLD_SECONDS:
+            return {"passed": False, "reason": f"stale_data ({age_seconds:.0f}s)"}
 
     # Floor shares to whole contracts and reject if < 1
     decision.shares = int(decision.shares)
@@ -592,15 +594,19 @@ def route_trade(
         fill_count=fill_count,
     )
 
-    # Log reconciliation — correct cost depends on side
+    # Log reconciliation — normalize fill_price to same reference frame as paper entry
+    # For NO trades: paper_entry_price is NO cost, fill_price is YES cents from API
+    # Convert fill_price to NO cost cents so slippage comparison is apples-to-apples
     if side == "no":
         live_amount_usd = ((100 - fill_price) * fill_count) / 100.0
+        recon_fill_cents = 100 - fill_price  # NO cost in cents
     else:
         live_amount_usd = (fill_price * fill_count) / 100.0
+        recon_fill_cents = fill_price  # YES cost in cents
     executor.log_reconciliation(
         live_order_id=order_id,
         paper_entry_price=decision.entry_price,
-        live_fill_price_cents=fill_price,
+        live_fill_price_cents=recon_fill_cents,
         paper_amount_usd=decision.amount_usd,
         live_amount_usd=live_amount_usd,
     )

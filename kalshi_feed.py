@@ -382,6 +382,8 @@ def fetch_markets():
     finally:
         conn.close()
 
+    for m in all_markets:
+        m["_fetched_at"] = now
     normalized = [_normalize(m) for m in all_markets]
     print(f"[rivalclaw/kalshi] Fetched {len(normalized)} markets from {len(FAST_SERIES)} series")
     return normalized
@@ -439,6 +441,7 @@ def _load_cached():
             "cap_strike": r["cap_strike"],
             "floor_strike": r["floor_strike"],
             "venue": "kalshi",
+            "fetched_at": r["fetched_at"],
         })
     return markets
 
@@ -474,6 +477,7 @@ def _normalize(m):
         "cap_strike": _safe_float(m.get("cap_strike")),
         "floor_strike": _safe_float(m.get("floor_strike")),
         "venue": "kalshi",
+        "fetched_at": m.get("_fetched_at", ""),
     }
 
 

@@ -11,3 +11,6 @@
 [dispatcher] Message from 1450469911: is our live trading profitable today?
 [dispatcher] Message from 1450469911: there is a difference between paper trades and live trades
 [dispatcher] Poll error: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[dispatcher] Poll error: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[dispatcher] Poll error: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[dispatcher] Poll error: HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out. (read timeout=15)

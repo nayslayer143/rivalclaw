@@ -845,7 +845,7 @@ def _check_mean_reversion(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    vol = _get_static_vol(underlying_id)
+    vol = _get_realtime_vol(underlying_id)
     fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
     if fair is None:
         return None
@@ -923,7 +923,7 @@ def _check_time_decay(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    vol = _get_static_vol(underlying_id)
+    vol = _get_realtime_vol(underlying_id)
     fair = _compute_fair_value(spot, strike, minutes, vol, strike_type)
     if fair is None:
         return None
@@ -993,7 +993,7 @@ def _check_vol_skew(market, balance, spot_prices):
     if not strike or strike <= 0:
         return None
 
-    realized_vol = _get_static_vol(underlying_id)
+    realized_vol = _get_realtime_vol(underlying_id)
     yes_price = market.get("yes_price", 0) or 0
     if yes_price <= 0.03 or yes_price >= 0.97:
         return None
@@ -1263,7 +1263,7 @@ def _check_correlation_echo(market, balance, spot_prices, active_signals: set):
         return None
 
     # Look for active signals on the correlated asset
-    has_correlated_signal = any(correlated in sig for sig in active_signals)
+    has_correlated_signal = correlated in active_signals
     if not has_correlated_signal:
         return None
 
@@ -1360,9 +1360,7 @@ def _check_polymarket_convergence(market, balance):
 
     amount = _size_for_strategy("polymarket_convergence", confidence, entry_price, balance, direction)
     if amount is None:
-        # Kelly breaks down at extreme prices (YES at 0.88 → Kelly=0).
-        # Use flat bet: 0.5% of balance for convergence plays.
-        amount = balance * 0.005
+        return None  # Kelly says negative EV — respect it
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
@@ -1605,14 +1603,20 @@ def _check_multi_timeframe(market, balance, spot_prices, all_decisions: list):
 
     matching_direction = None
     for d in all_decisions:
-        d_underlying = (d.metadata or {}).get("underlying") or ""
         d_mid = d.market_id or ""
-        # Check if same underlying, different timeframe
-        if underlying_id in d_mid or underlying_id.replace("-", "") in d_mid.lower():
-            d_tf = "fast" if "15M" in d_mid else "slow"
-            if d_tf == opposite_tf:
-                matching_direction = d.direction
+        # Resolve the other decision's underlying via series mapping
+        d_uid = None
+        for series, uid in SERIES_TO_UNDERLYING.items():
+            if d_mid.startswith(series):
+                d_uid = uid
                 break
+        if d_uid != underlying_id:
+            continue
+        # Same underlying — check if different timeframe
+        d_tf = "fast" if "15M" in d_mid else "slow"
+        if d_tf == opposite_tf:
+            matching_direction = d.direction
+            break
 
     if not matching_direction:
         return None
@@ -1715,8 +1719,8 @@ def _check_election_field(markets: list[dict], balance: float) -> list[TradeDeci
             if edge <= 0.005:
                 continue
             confidence = min(no_price, 0.93)
-            amount = balance * 0.003  # Tiny bets — many positions
-            if amount < 1:
+            amount = _size_for_strategy("election_field_arb", confidence, no_price, balance, "NO")
+            if amount is None:
                 continue
             decisions.append(TradeDecision(
                 market_id=m["market_id"], question=m.get("question", ""),
@@ -2018,7 +2022,7 @@ def _check_forecast_delta(market, balance):
 
     amount = _size_for_strategy("forecast_delta", confidence, entry_price, balance, direction)
     if amount is None:
-        amount = balance * 0.003
+        return None  # Kelly says negative EV — respect it
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction=direction, confidence=confidence,
@@ -2130,9 +2134,7 @@ def _check_fade_public(market, balance) -> TradeDecision | None:
     confidence = min(no_price, 0.62)  # conservative — contrarian bet
     amount = _size_for_strategy("fade_public", confidence, no_price, balance, "NO")
     if amount is None:
-        amount = balance * 0.002  # half-size fallback
-    if amount < 2:
-        return None
+        return None  # Kelly says negative EV — respect it
     return TradeDecision(
         market_id=market["market_id"], question=market.get("question", ""),
         direction="NO", confidence=confidence,
@@ -2810,7 +2812,14 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
 
         # 9. Correlation echo (BTC signal → ETH)
         if not d:
-            active_sigs = {d2.market_id for d2 in decisions}
+            # Build set of underlying asset IDs from existing decisions
+            # (correlation_echo searches for "bitcoin"/"ethereum" in this set)
+            active_sigs = set()
+            for d2 in decisions:
+                for series, uid in SERIES_TO_UNDERLYING.items():
+                    if d2.market_id.startswith(series):
+                        active_sigs.add(uid)
+                        break
             d = _check_correlation_echo(market, balance, spot, active_sigs)
             if d:
                 stats["correlation_echo"] += 1

@@ -560,6 +560,63 @@ def reconcile_resting_orders() -> int:
     return updated
 
 
+def reconcile_filled_orders() -> int:
+    """Transition filled live_orders to 'settled' once the Kalshi market has resolved.
+    Also records the outcome (win/loss) based on the resolution result.
+    Returns number of orders updated."""
+    import kalshi_feed as _kf
+    conn = _get_conn()
+    updated = 0
+    try:
+        filled = conn.execute(
+            "SELECT id, ticker, side, fill_price, fill_count FROM live_orders "
+            "WHERE status='filled' AND mode='live'"
+        ).fetchall()
+        for row in filled:
+            try:
+                data = _kf._call_kalshi("GET", f"/markets/{row['ticker']}")
+                if not data:
+                    continue
+                m = data.get("market", data)
+                result = m.get("result", "")
+                if not result:
+                    continue  # Not settled yet
+
+                # Determine win/loss
+                we_bet_no = row["side"] == "no"
+                we_won = (result == "no" and we_bet_no) or (result == "yes" and not we_bet_no)
+                outcome = "win" if we_won else "loss"
+
+                # Compute PnL in cents
+                fill_count = row["fill_count"] or 0
+                fill_price = row["fill_price"] or 0
+                if we_bet_no:
+                    cost_cents = (100 - fill_price) * fill_count
+                    payout_cents = 100 * fill_count if we_won else 0
+                else:
+                    cost_cents = fill_price * fill_count
+                    payout_cents = 100 * fill_count if we_won else 0
+                pnl_cents = payout_cents - cost_cents
+
+                conn.execute(
+                    "UPDATE live_orders SET status='settled', outcome=?, pnl_cents=?, "
+                    "filled_at=COALESCE(filled_at, CURRENT_TIMESTAMP) WHERE id=?",
+                    (outcome, pnl_cents, row["id"]),
+                )
+                updated += 1
+            except Exception:
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+    if updated:
+        import logging
+        logging.getLogger("rivalclaw.kalshi_executor").info(
+            "Reconciled %d filled orders to settled", updated
+        )
+    return updated
+
+
 def migrate_maker_columns():
     """Add maker tracking columns to live_orders if not present."""
     conn = _get_conn()
@@ -573,6 +630,10 @@ def migrate_maker_columns():
             conn.execute("ALTER TABLE live_orders ADD COLUMN maker_savings REAL")
         if "fill_time_sec" not in cols:
             conn.execute("ALTER TABLE live_orders ADD COLUMN fill_time_sec REAL")
+        if "outcome" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN outcome TEXT")
+        if "pnl_cents" not in cols:
+            conn.execute("ALTER TABLE live_orders ADD COLUMN pnl_cents INTEGER")
         conn.commit()
     finally:
         conn.close()
@@ -640,8 +701,9 @@ def sync_account() -> dict:
         if p.get("position", 0) != 0 or p.get("total_traded", 0) != 0
     ])
 
-    # Reconcile any stale resting orders
+    # Reconcile stale orders: resting→filled, filled→settled
     reconcile_resting_orders()
+    reconcile_filled_orders()
 
     log_account_snapshot(balance_cents, portfolio_val, open_count)
 
