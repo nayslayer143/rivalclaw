@@ -2892,15 +2892,16 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
         if blocked_yes:
             print(f"[rivalclaw/brain] Blocked {blocked_yes} YES-direction trades (15% WR filter)")
 
-    # Entry price bounds — applied to ALL strategies globally (including reversed)
-    # This protects reversed trades from bad risk/reward:
-    #   NO @$0.14 → reversed YES @$0.86 → BLOCKED (risk $0.86 to win $0.14)
-    #   NO @$0.50 → reversed YES @$0.50 → PASS (risk $0.50 to win $0.50)
+    # Entry price bounds — applied to ALL strategies globally
+    # Reversed series get a wider max (testing higher entries on anti-correlated signals)
+    REVERSE_MAX = float(os.environ.get("RIVALCLAW_REVERSE_MAX_ENTRY", "0.85"))
     before = len(hedged)
-    hedged = [d for d in hedged if MIN_ENTRY_PRICE <= d.entry_price <= MAX_ENTRY_PRICE]
+    hedged = [d for d in hedged if MIN_ENTRY_PRICE <= d.entry_price <= (
+        REVERSE_MAX if d.market_id.split("-")[0] in REVERSE_SERIES else MAX_ENTRY_PRICE
+    )]
     blocked_price = before - len(hedged)
     if blocked_price:
-        print(f"[rivalclaw/brain] Blocked {blocked_price} trades outside ${MIN_ENTRY_PRICE:.2f}-${MAX_ENTRY_PRICE:.2f} entry range")
+        print(f"[rivalclaw/brain] Blocked {blocked_price} trades outside entry range")
 
     # Sort by confidence × velocity preference — faster markets rank higher
     def _rank(d):
