@@ -484,16 +484,23 @@ def get_balance() -> dict:
         return {"error": "request_failed", "detail": str(e)}
 
 
-def get_positions() -> dict:
-    """GET portfolio positions."""
+def get_positions(settlement_status: str = "unsettled") -> dict:
+    """GET portfolio positions.
+
+    Args:
+        settlement_status: 'unsettled' (default), 'settled', or 'all'
+    """
     path = "/portfolio/positions"
     headers = _get_kalshi_auth_headers("GET", path)
     if headers is None:
         return {"error": "auth_failed"}
 
     url = f"{_get_api_base()}{path}"
+    params = {"limit": 200}
+    if settlement_status != "all":
+        params["settlement_status"] = settlement_status
     try:
-        resp = _requests.get(url, headers=headers, timeout=30)
+        resp = _requests.get(url, headers=headers, params=params, timeout=30)
         resp.raise_for_status()
         return resp.json()
     except _requests.exceptions.RequestException as e:
@@ -615,8 +622,23 @@ def sync_account() -> dict:
 
     balance_cents = balance_data.get("balance", 0)
     portfolio_val = balance_data.get("portfolio_value", 0)
-    positions_list = positions_data.get("market_positions", [])
-    open_count = len([p for p in positions_list if p.get("position", 0) != 0])
+    # Kalshi API may return positions under different keys depending on version
+    positions_list = (
+        positions_data.get("market_positions")
+        or positions_data.get("event_positions")
+        or positions_data.get("positions")
+        or []
+    )
+    if not positions_list:
+        import logging
+        logging.getLogger("rivalclaw.kalshi_executor").warning(
+            "No positions found in API response. Keys: %s", list(positions_data.keys())
+        )
+    # Count positions: check both 'position' (net qty) and 'total_traded' fields
+    open_count = len([
+        p for p in positions_list
+        if p.get("position", 0) != 0 or p.get("total_traded", 0) != 0
+    ])
 
     # Reconcile any stale resting orders
     reconcile_resting_orders()

@@ -58,6 +58,7 @@ logger = logging.getLogger("rivalclaw.execution_router")
 # ---------------------------------------------------------------------------
 
 _cycle_order_count: int = 0
+_cycle_weather_count: int = 0
 _current_cycle_id: str = ""
 _hour_order_count: int = 0
 _hour_window_start: float = 0.0
@@ -132,6 +133,7 @@ def _get_config() -> dict:
         "max_exposure_usd": float(os.environ.get("RIVALCLAW_LIVE_MAX_EXPOSURE_USD", "10")),
         "max_contracts": int(os.environ.get("RIVALCLAW_LIVE_MAX_CONTRACTS_PER_ORDER", "5")),
         "max_per_cycle": int(os.environ.get("RIVALCLAW_LIVE_MAX_ORDERS_PER_CYCLE", "2")),
+        "max_weather_per_cycle": int(os.environ.get("RIVALCLAW_LIVE_MAX_WEATHER_PER_CYCLE", "30")),
         "max_per_hour": int(os.environ.get("RIVALCLAW_LIVE_MAX_ORDERS_PER_HOUR", "10")),
         "allowed_series": os.environ.get(
             "RIVALCLAW_LIVE_SERIES", "KXDOGE15M,KXADA15M,KXBNB15M,KXBCH15M"
@@ -218,8 +220,9 @@ def _get_open_live_exposure() -> float:
 
 def reset_cycle(cycle_id: str) -> None:
     """Reset the per-cycle order counter for a new cycle."""
-    global _cycle_order_count, _current_cycle_id
+    global _cycle_order_count, _cycle_weather_count, _current_cycle_id
     _cycle_order_count = 0
+    _cycle_weather_count = 0
     _current_cycle_id = cycle_id
 
 
@@ -286,8 +289,14 @@ def preflight_check(
         _hour_window_start = now
         _hour_order_count = 0
 
-    if _cycle_order_count >= cfg["max_per_cycle"]:
-        return {"passed": False, "reason": "cycle_rate_exceeded"}
+    ticker = decision.market_id
+    is_weather = ticker.startswith("KXHIGH") or ticker.startswith("KXLOW") or ticker.startswith("KXTEMP")
+    if is_weather:
+        if _cycle_weather_count >= cfg["max_weather_per_cycle"]:
+            return {"passed": False, "reason": "cycle_rate_exceeded"}
+    else:
+        if _cycle_order_count >= cfg["max_per_cycle"]:
+            return {"passed": False, "reason": "cycle_rate_exceeded"}
 
     if _hour_order_count >= cfg["max_per_hour"]:
         return {"passed": False, "reason": "hour_rate_exceeded"}
@@ -480,7 +489,11 @@ def route_trade(
             strategy=decision.strategy,
             market_question=decision.question,
         )
-        _cycle_order_count += 1
+        _is_wx = ticker.startswith("KXHIGH") or ticker.startswith("KXLOW") or ticker.startswith("KXTEMP")
+        if _is_wx:
+            _cycle_weather_count += 1
+        else:
+            _cycle_order_count += 1
         _hour_order_count += 1
         logger.info("Shadow order logged: %s (id=%d)", ticker, order_id)
         return {
@@ -549,7 +562,11 @@ def route_trade(
         brain_price=brain_price,
     )
 
-    _cycle_order_count += 1
+    _is_weather = ticker.startswith("KXHIGH") or ticker.startswith("KXLOW") or ticker.startswith("KXTEMP")
+    if _is_weather:
+        _cycle_weather_count += 1
+    else:
+        _cycle_order_count += 1
     _hour_order_count += 1
 
     # Poll for fill — maker uses patience window, taker uses fast poll
