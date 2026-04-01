@@ -88,6 +88,18 @@ def init_engine(db_dir: str | None = None) -> None:
     # Create wallet — idempotent, returns existing if already created
     _engine.create_wallet(BOT_ID, INITIAL_BALANCE)
 
+    # Force-sync protocol wallet to a high balance so it doesn't block trades.
+    # Real balance checks happen in execution_router pre-flight using Kalshi balance.
+    try:
+        w = _engine.get_wallet(BOT_ID)
+        if w.cash_balance < 1000:
+            _engine._wallet_mgr.credit(
+                BOT_ID, 10000 - w.cash_balance, "init_sync", "startup"
+            )
+            logger.info(f"Protocol wallet topped up: ${w.cash_balance:.2f} → $10000")
+    except Exception as e:
+        logger.warning(f"Wallet top-up failed: {e}")
+
     # Verify integrity on startup
     if not _engine.verify_integrity(BOT_ID):
         logger.warning("Wallet integrity check failed on startup — rebuilding state")
@@ -453,9 +465,11 @@ def set_account_balance(balance_cents: int) -> None:
             wallet = _engine.get_wallet(BOT_ID)
             kalshi_usd = balance_cents / 100.0
             drift = kalshi_usd - wallet.cash_balance
-            if abs(drift) > 0.50:  # Only correct if drift > $0.50
+            if abs(drift) > 0.50:
                 _engine._wallet_mgr.credit(
                     BOT_ID, drift, "kalshi_sync", f"sync_{balance_cents}"
                 )
-        except Exception:
-            pass
+                new_wallet = _engine.get_wallet(BOT_ID)
+                print(f"[rivalclaw] Protocol wallet synced: ${wallet.cash_balance:.2f} → ${new_wallet.cash_balance:.2f} (Kalshi: ${kalshi_usd:.2f})")
+        except Exception as e:
+            print(f"[rivalclaw] Protocol wallet sync FAILED: {e}")

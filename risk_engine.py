@@ -20,6 +20,16 @@ from collections import defaultdict
 
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", Path(__file__).parent / "rivalclaw.db"))
 
+_RISK_DEBUG = Path(__file__).parent / "risk_debug.log"
+
+def _risk_log(msg):
+    """Write to debug file — stdout may not reach rivalclaw.log."""
+    try:
+        with open(_RISK_DEBUG, "a") as f:
+            f.write(f"{datetime.datetime.utcnow().isoformat()[:19]} {msg}\n")
+    except Exception:
+        pass
+
 # Risk limits
 MAX_CRYPTO_EXPOSURE_PCT = float(os.environ.get("RIVALCLAW_MAX_CRYPTO_PCT", "0.40"))  # 40% of balance
 MAX_SINGLE_ASSET_PCT = float(os.environ.get("RIVALCLAW_MAX_ASSET_PCT", "0.25"))  # 25% per asset
@@ -172,11 +182,16 @@ def get_portfolio_exposure() -> dict:
             exposure["DOGE"] += r["amount_usd"]
         elif "BNB" in mid:
             exposure["BNB"] += r["amount_usd"]
+        elif "HIGH" in mid or "LOW" in mid or "TEMP" in mid:
+            exposure["WEATHER"] += r["amount_usd"]
+        elif "INXU" in mid or "NASDAQ" in mid:
+            exposure["INDEX"] += r["amount_usd"]
         else:
             exposure["OTHER"] += r["amount_usd"]
 
-    exposure["total_crypto"] = sum(v for k, v in exposure.items() if k != "OTHER")
-    exposure["total"] = sum(exposure.values())
+    crypto_keys = {"BTC", "ETH", "DOGE", "BNB"}
+    exposure["total_crypto"] = sum(v for k, v in exposure.items() if k in crypto_keys)
+    exposure["total"] = sum(v for k, v in exposure.items() if k not in ("total_crypto",))
     return dict(exposure)
 
 
@@ -194,7 +209,8 @@ def check_risk_limits(decision, balance: float) -> tuple[bool, str]:
     if new_crypto > max_crypto:
         return False, f"crypto exposure ${new_crypto:.0f} > {MAX_CRYPTO_EXPOSURE_PCT:.0%} of ${balance:.0f}"
 
-    # Single asset limit
+    # Single asset limit — weather/index get their own buckets so they don't
+    # overflow "OTHER" and block everything
     mid = decision.market_id
     if "BTC" in mid or "KXBTC" in mid:
         asset = "BTC"
@@ -204,6 +220,10 @@ def check_risk_limits(decision, balance: float) -> tuple[bool, str]:
         asset = "DOGE"
     elif "BNB" in mid:
         asset = "BNB"
+    elif "HIGH" in mid or "LOW" in mid or "TEMP" in mid:
+        asset = "WEATHER"
+    elif "INXU" in mid or "NASDAQ" in mid:
+        asset = "INDEX"
     else:
         asset = "OTHER"
 
@@ -228,12 +248,14 @@ def adjust_decision(decision, balance: float, regime: dict,
     # Check risk limits first
     allowed, reason = check_risk_limits(decision, balance)
     if not allowed:
+        _risk_log(f"LIMIT {decision.market_id[:25]}: {reason}")
         return None
 
     # Get strategy score
     score = strategy_scores.get(decision.strategy, 0.5)
     if score <= 0.0:
-        return None  # Dead strategy
+        _risk_log(f"DEAD {decision.market_id[:25]}: score={score}")
+        return None
 
     # Regime adjustment
     regime_mult = 1.0
@@ -276,6 +298,7 @@ def adjust_decision(decision, balance: float, regime: dict,
     decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
     if decision.amount_usd < 0.25:
+        _risk_log(f"SMALL {decision.market_id[:25]}: ${decision.amount_usd:.3f} (score={score} regime={regime_mult} speed={speed_mult} max_pos=${max_position:.2f} bal=${balance:.2f})")
         return None
 
     return decision
