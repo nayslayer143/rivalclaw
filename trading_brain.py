@@ -69,6 +69,13 @@ REVERSE_SERIES = set(
 #   NO 0.70+ = "dumb zone" (win $0.18 avg, lose $0.88, need 5 wins per loss)
 MAX_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MAX_ENTRY_PRICE", "0.60"))
 MIN_ENTRY_PRICE = float(os.environ.get("RIVALCLAW_MIN_ENTRY_PRICE", "0.08"))
+# Confidence floor — losing trades avg 0.52, winners avg 0.79 (1,071 trade sample)
+MIN_CONFIDENCE = float(os.environ.get("RIVALCLAW_MIN_CONFIDENCE", "0.60"))
+# Dead zone: 0.30-0.45 entry prices have 41-47% WR and poor avg PnL
+# Require higher confidence to trade in this range
+DEAD_ZONE_MIN = float(os.environ.get("RIVALCLAW_DEAD_ZONE_MIN", "0.30"))
+DEAD_ZONE_MAX = float(os.environ.get("RIVALCLAW_DEAD_ZONE_MAX", "0.45"))
+DEAD_ZONE_MIN_CONFIDENCE = float(os.environ.get("RIVALCLAW_DEAD_ZONE_CONFIDENCE", "0.75"))
 VELOCITY_PREFERENCE = float(os.environ.get("RIVALCLAW_VELOCITY_PREFERENCE", "1.5"))
 
 # Data-driven edge multipliers (from 375-trade analysis)
@@ -2982,6 +2989,23 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     blocked_price = before - len(hedged)
     if blocked_price:
         print(f"[rivalclaw/brain] Blocked {blocked_price} trades outside entry range")
+
+    # Confidence floor — filter low-confidence trades (losers avg 0.52, winners avg 0.79)
+    before = len(hedged)
+    hedged = [d for d in hedged if d.confidence >= MIN_CONFIDENCE]
+    blocked_conf = before - len(hedged)
+    if blocked_conf:
+        print(f"[rivalclaw/brain] Blocked {blocked_conf} trades below confidence floor ({MIN_CONFIDENCE})")
+
+    # Dead zone filter — 0.30-0.45 entry requires higher confidence (41-47% WR zone)
+    before = len(hedged)
+    hedged = [d for d in hedged if not (
+        DEAD_ZONE_MIN <= d.entry_price <= DEAD_ZONE_MAX
+        and d.confidence < DEAD_ZONE_MIN_CONFIDENCE
+    )]
+    blocked_dz = before - len(hedged)
+    if blocked_dz:
+        print(f"[rivalclaw/brain] Blocked {blocked_dz} trades in dead zone (entry {DEAD_ZONE_MIN}-{DEAD_ZONE_MAX}, conf<{DEAD_ZONE_MIN_CONFIDENCE})")
 
     # Sort by confidence × velocity preference — faster markets rank higher
     def _rank(d):

@@ -265,6 +265,18 @@ def run_loop():
         except Exception as e:
             print(f"[rivalclaw] Account sync failed (non-fatal): {e}")
 
+    # Early exit: skip full analysis if balance can't cover any order
+    # Prevents 700+ wasted rejections per day when balance is depleted
+    if exec_mode in ("live", "shadow"):
+        try:
+            live_bal = protocol_adapter._last_account_balance_cents
+            min_order_cents = 10  # Cheapest possible: 1 contract * 10c NO cost
+            if live_bal is not None and live_bal < min_order_cents:
+                print(f"[rivalclaw] Balance too low ({live_bal}c) — skipping analysis")
+                return
+        except Exception:
+            pass  # If we can't read balance, proceed normally
+
     cycle_started_at_ms = time.time() * 1000
     cycle_started_iso = datetime.datetime.utcnow().isoformat()
     run_id = elog.start_run()
