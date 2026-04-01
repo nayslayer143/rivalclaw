@@ -442,6 +442,20 @@ def shutdown() -> None:
 
 
 def set_account_balance(balance_cents: int) -> None:
-    """Update cached account balance for pre-flight checks."""
+    """Update cached account balance for pre-flight checks.
+    Also syncs the protocol engine wallet so its balance check doesn't block trades."""
     global _last_account_balance_cents
     _last_account_balance_cents = balance_cents
+
+    # Sync protocol engine wallet to match Kalshi reality
+    if _engine is not None and balance_cents > 0:
+        try:
+            wallet = _engine.get_wallet(BOT_ID)
+            kalshi_usd = balance_cents / 100.0
+            drift = kalshi_usd - wallet.cash_balance
+            if abs(drift) > 0.50:  # Only correct if drift > $0.50
+                _engine._wallet_mgr.credit(
+                    BOT_ID, drift, "kalshi_sync", f"sync_{balance_cents}"
+                )
+        except Exception:
+            pass

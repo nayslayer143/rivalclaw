@@ -59,52 +59,28 @@ def _paper_mkt(question):
     return "OTHER"
 
 
-def get_live_section():
-    """Build live report from Kalshi API data only."""
-    import kalshi_executor
-
-    # Balance
-    try:
-        bal = kalshi_executor.get_balance()
-        balance_usd = bal.get("balance", 0) / 100
-    except Exception:
-        balance_usd = None
-
-    # Kill switch
-    env_path = Path(__file__).parent / ".env"
-    kill_switch = "?"
-    for line in env_path.read_text().splitlines():
-        if "RIVALCLAW_LIVE_KILL_SWITCH=" in line and not line.startswith("#"):
-            kill_switch = "ON" if "=1" in line else "OFF"
-
-    # Settlements from Kalshi (real W/L) — today only
-    today = datetime.date.today().isoformat()  # e.g. "2026-03-31"
-    try:
-        base = kalshi_executor._get_api_base()
-        path = "/portfolio/settlements"
-        headers = kalshi_executor._get_kalshi_auth_headers("GET", path)
-        resp = requests.get(f"{base}{path}", headers=headers, params={"limit": 200}, timeout=30)
-        all_settlements = resp.json().get("settlements", [])
-        # Filter to today only
-        settlements = [s for s in all_settlements if s.get("settled_time", "").startswith(today)]
-    except Exception:
-        settlements = []
-
+def _compute_settlement_stats(settlements):
+    """Compute W/L/PnL from a list of Kalshi settlement dicts."""
     markets = {}
     wins = losses = 0
     total_pnl = 0.0
     for s in settlements:
-        ticker = s.get("ticker", "")
-        revenue = s.get("revenue", 0) / 100
-        no_cost = float(s.get("no_total_cost_dollars", "0"))
-        yes_cost = float(s.get("yes_total_cost_dollars", "0"))
-        fee = float(s.get("fee_cost", "0"))
+        # revenue is in CENTS, costs are in DOLLARS
+        revenue = s.get("revenue", 0) / 100.0
+        no_cost = float(s.get("no_total_cost_dollars", "0") or 0)
+        yes_cost = float(s.get("yes_total_cost_dollars", "0") or 0)
+        fee = float(s.get("fee_cost", "0") or 0)
         cost = no_cost + yes_cost + fee
-        pnl = revenue - cost
 
+        # Skip zero-exposure settlements (no position)
+        if revenue == 0 and cost == 0:
+            continue
+
+        pnl = revenue - cost
+        ticker = s.get("ticker", "")
         m = _series_name(ticker)
         if m not in markets:
-            markets[m] = {"w": 0, "l": 0, "pnl": 0}
+            markets[m] = {"w": 0, "l": 0, "pnl": 0.0}
         if pnl > 0:
             wins += 1
             markets[m]["w"] += 1
@@ -114,40 +90,92 @@ def get_live_section():
         markets[m]["pnl"] += pnl
         total_pnl += pnl
 
-    # Open positions
+    return wins, losses, total_pnl, markets
+
+
+def get_live_section():
+    """Build live report from Kalshi API data only."""
+    import kalshi_executor
+
+    # Balance + portfolio
+    balance_usd = None
+    portfolio_usd = 0.0
+    try:
+        bal = kalshi_executor.get_balance()
+        balance_usd = bal.get("balance", 0) / 100
+        portfolio_usd = bal.get("portfolio_value", 0) / 100
+    except Exception:
+        pass
+
+    # Kill switch
+    env_path = Path(__file__).parent / ".env"
+    kill_switch = "?"
+    for line in env_path.read_text().splitlines():
+        if "RIVALCLAW_LIVE_KILL_SWITCH=" in line and not line.startswith("#"):
+            kill_switch = "ON" if "=1" in line else "OFF"
+
+    # All settlements from Kalshi
+    today = datetime.date.today().isoformat()
+    all_settlements = []
+    try:
+        base = kalshi_executor._get_api_base()
+        path = "/portfolio/settlements"
+        headers = kalshi_executor._get_kalshi_auth_headers("GET", path)
+        resp = requests.get(f"{base}{path}", headers=headers, params={"limit": 200}, timeout=30)
+        all_settlements = resp.json().get("settlements", [])
+    except Exception:
+        pass
+
+    # Today's settlements
+    today_sett = [s for s in all_settlements if s.get("settled_time", "").startswith(today)]
+    t_wins, t_losses, t_pnl, t_markets = _compute_settlement_stats(today_sett)
+
+    # All-time settlements
+    a_wins, a_losses, a_pnl, a_markets = _compute_settlement_stats(all_settlements)
+
+    # Open positions (from API)
+    open_pos = 0
     try:
         pos = kalshi_executor.get_positions()
-        open_pos = sum(1 for p in pos.get("event_positions", []) if p.get("event_exposure", 0) != 0)
+        # Try both keys — Kalshi API varies
+        positions = pos.get("market_positions") or pos.get("event_positions") or []
+        open_pos = sum(
+            1 for p in positions
+            if float(p.get("market_exposure_dollars", 0) or p.get("event_exposure_dollars", 0) or 0) > 0
+        )
     except Exception:
-        open_pos = 0
+        pass
 
-    # Resting orders
-    try:
-        conn = sqlite3.connect(str(kalshi_executor.DB_PATH))
-        conn.row_factory = sqlite3.Row
-        resting = conn.execute("SELECT COUNT(*) as cnt FROM live_orders WHERE status='resting'").fetchone()["cnt"]
-        conn.close()
-    except Exception:
-        resting = 0
-
-    total = wins + losses
-    wr = wins / total * 100 if total else 0
+    # Format
     bal_str = f"${balance_usd:.2f}" if balance_usd is not None else "?"
+    total_val = (balance_usd or 0) + portfolio_usd
+    a_total = a_wins + a_losses
+    a_wr = a_wins / a_total * 100 if a_total else 0
 
+    section = f"LIVE | {bal_str} + ${portfolio_usd:.2f} = ${total_val:.2f} | Kill:{kill_switch}"
+
+    # All-time line
+    section += f"\nAll-time: {a_wins}W/{a_losses}L ({a_wr:.0f}%) ${a_pnl:+.2f}"
+
+    # Today line
+    if t_wins + t_losses > 0:
+        t_wr = t_wins / (t_wins + t_losses) * 100
+        section += f"\nToday: {t_wins}W/{t_losses}L ({t_wr:.0f}%) ${t_pnl:+.2f}"
+
+    if open_pos:
+        section += f" | {open_pos} open"
+
+    # Per-market breakdown (all-time, sorted by PnL)
     mkt_lines = []
-    for m, d in sorted(markets.items(), key=lambda x: x[1]["pnl"], reverse=True):
+    for m, d in sorted(a_markets.items(), key=lambda x: x[1]["pnl"], reverse=True):
         t = d["w"] + d["l"]
         mwr = d["w"] / t * 100 if t else 0
-        mkt_lines.append(f"  {m}: {d['w']}W/{d['l']}L ({mwr:.0f}%) ${d['pnl']:+.2f}")
-
-    section = f"🔴 LIVE | {bal_str} | Kill:{kill_switch}"
-    section += f"\n{wins}W/{losses}L/{open_pos}open | WR:{wr:.0f}% | ${total_pnl:+.2f}"
-    if resting:
-        section += f" | {resting} resting"
+        flag = " !!!" if mwr < 30 and t >= 3 else ""
+        mkt_lines.append(f"  {m}: {d['w']}W/{d['l']}L ({mwr:.0f}%) ${d['pnl']:+.2f}{flag}")
     if mkt_lines:
         section += "\n" + "\n".join(mkt_lines)
 
-    return section, total_pnl
+    return section, a_pnl
 
 
 def get_paper_section():
@@ -185,12 +213,12 @@ def get_paper_section():
     for m, d in sorted(markets.items(), key=lambda x: x[1]["pnl"], reverse=True):
         t = d["w"] + d["l"]
         mwr = d["w"] / t * 100 if t else 0
-        flag = " ⚠️" if mwr < 30 and t >= 3 else ""
+        flag = " !!!" if mwr < 30 and t >= 3 else ""
         mkt_lines.append(f"  {m}: {d['w']}W/{d['l']}L ({mwr:.0f}%) ${d['pnl']:+.2f}{flag}")
 
-    p_header = "🎯 100!" if len(rows) >= PAPER_TARGET else f"{len(rows)}/{PAPER_TARGET}"
+    p_header = "100+" if len(rows) >= PAPER_TARGET else f"{len(rows)}/{PAPER_TARGET}"
     section = (
-        f"📋 PAPER | {p_header}\n"
+        f"PAPER | {p_header}\n"
         f"{p_w}W/{p_l}L/{p_o}open | WR:{p_wr:.0f}% | ${p_pnl:+.2f}\n"
         + "\n".join(mkt_lines)
     )
