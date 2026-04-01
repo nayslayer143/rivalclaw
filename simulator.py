@@ -465,13 +465,15 @@ def run_loop():
             # Floor to whole contracts; drop if rounds to zero
             d.shares = int(d.shares)
             if d.shares < 1:
-                continue  # Drop — too small after sizing
+                print(f"[rivalclaw] Sizing drop: {d.market_id[:30]} shares={d.shares} amt=${d.amount_usd:.3f} entry=${d.entry_price:.3f}")
+                continue
             d.amount_usd = d.shares * d.entry_price
             sized.append(d)
         decisions = sized
 
     for d in decisions:
         if d.market_id in open_ids:
+            print(f"[rivalclaw] Open-ID skip: {d.market_id[:35]}")
             continue
         opportunities_qualified += 1
         if USE_PROTOCOL:

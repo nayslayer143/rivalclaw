@@ -524,12 +524,13 @@ def get_fills(limit: int = 50) -> dict:
 
 
 def reconcile_resting_orders() -> int:
-    """Check all 'resting' live_orders against Kalshi and update status if executed/cancelled.
+    """Reconcile stale orders: resting→filled/cancelled, pending→cancelled.
     Returns number of orders updated."""
     import kalshi_feed as _kf
     conn = _get_conn()
     updated = 0
     try:
+        # 1. Check resting orders against Kalshi API
         resting = conn.execute(
             "SELECT id, kalshi_order_id FROM live_orders WHERE status='resting' AND kalshi_order_id IS NOT NULL"
         ).fetchall()
@@ -554,6 +555,20 @@ def reconcile_resting_orders() -> int:
                     updated += 1
             except Exception:
                 pass
+
+        # 2. Cancel stale pending orders (>10 min old) — they consume exposure
+        # budget and never resolve. Kalshi orders either fill instantly or fail.
+        stale = conn.execute(
+            "SELECT id FROM live_orders WHERE status='pending' AND mode='live' "
+            "AND submitted_at < datetime(CURRENT_TIMESTAMP, '-10 minutes')"
+        ).fetchall()
+        for row in stale:
+            conn.execute(
+                "UPDATE live_orders SET status='cancelled', rejection_reason='stale_pending' WHERE id=?",
+                (row["id"],)
+            )
+            updated += 1
+
         conn.commit()
     finally:
         conn.close()
