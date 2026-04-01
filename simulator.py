@@ -341,6 +341,15 @@ def run_loop():
             state.setdefault("sharpe_ratio", _legacy.get("sharpe_ratio"))
             state.setdefault("max_drawdown", _legacy.get("max_drawdown", 0.0))
             state.setdefault("total_trades", _legacy.get("total_trades", 0))
+        # In live mode, use the real Kalshi balance for sizing — that's the truth signal.
+        # The protocol wallet drifts and paper balance is fake money.
+        if exec_mode == "live":
+            kalshi_bal = protocol_adapter._last_account_balance_cents
+            if kalshi_bal and kalshi_bal > 0:
+                real_balance = kalshi_bal / 100.0
+                if abs(real_balance - state["balance"]) > 1:
+                    print(f"[rivalclaw] Using Kalshi balance: ${real_balance:.2f} (protocol was ${state['balance']:.2f})")
+                state["balance"] = real_balance
     else:
         state = wallet.get_state()
     spot_prices = spot_feed.get_spot_prices()
