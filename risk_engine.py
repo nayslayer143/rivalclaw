@@ -279,25 +279,20 @@ def adjust_decision(decision, balance: float, regime: dict,
         elif decision.strategy == "spot_momentum":
             regime_mult = 0.5
 
-    # Speed-based sizing: fast markets get full size, slow markets get less
-    # Polymarket gets a floor — different venue, different dynamics, don't starve it
+    # Speed-based sizing: all Kalshi markets get full size.
+    # Previous 0.25x penalty was crushing trades to pennies on a $27 balance.
     venue = (decision.metadata or {}).get("venue", "kalshi")
-    priority = (decision.metadata or {}).get("priority_score", 0)
     if venue == "polymarket":
-        speed_mult = 0.5  # Polymarket: half size (longer-dated but we need data)
-    elif priority >= 14:
-        speed_mult = 1.0
-    elif priority >= 10:
         speed_mult = 0.5
     else:
-        speed_mult = 0.25
+        speed_mult = 1.0
 
     final_mult = score * regime_mult * speed_mult
-    max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.04")) * 0.95
+    max_position = balance * float(os.environ.get("RIVALCLAW_MAX_POSITION_PCT", "0.10")) * 0.95
     decision.amount_usd = min(decision.amount_usd * final_mult, max_position)
     decision.shares = decision.amount_usd / decision.entry_price if decision.entry_price > 0 else 0
 
-    if decision.amount_usd < 0.25:
+    if decision.amount_usd < 0.10:
         _risk_log(f"SMALL {decision.market_id[:25]}: ${decision.amount_usd:.3f} (score={score} regime={regime_mult} speed={speed_mult} max_pos=${max_position:.2f} bal=${balance:.2f})")
         return None
 
