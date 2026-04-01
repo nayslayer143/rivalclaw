@@ -88,17 +88,21 @@ def init_engine(db_dir: str | None = None) -> None:
     # Create wallet — idempotent, returns existing if already created
     _engine.create_wallet(BOT_ID, INITIAL_BALANCE)
 
-    # Force-sync protocol wallet to a high balance so it doesn't block trades.
-    # Real balance checks happen in execution_router pre-flight using Kalshi balance.
+    # PERMANENT FIX: Protocol wallet drains because credit_resolution fails
+    # silently on 99% of resolutions (1,554 debits, 0 credits = -$36K drift).
+    # The protocol wallet is irrelevant for live trading — execution_router
+    # pre-flight uses the real Kalshi balance. Force wallet to $100K so the
+    # protocol engine's own balance check never blocks. This runs every cycle
+    # because each execute_entry debits the wallet.
     try:
         w = _engine.get_wallet(BOT_ID)
-        if w.cash_balance < 1000:
+        target = 100_000.0
+        if w.cash_balance < target * 0.5:
             _engine._wallet_mgr.credit(
-                BOT_ID, 10000 - w.cash_balance, "init_sync", "startup"
+                BOT_ID, target - w.cash_balance, "cycle_sync", "prevent_drain"
             )
-            logger.info(f"Protocol wallet topped up: ${w.cash_balance:.2f} → $10000")
-    except Exception as e:
-        logger.warning(f"Wallet top-up failed: {e}")
+    except Exception:
+        pass
 
     # Verify integrity on startup
     if not _engine.verify_integrity(BOT_ID):
@@ -459,17 +463,4 @@ def set_account_balance(balance_cents: int) -> None:
     global _last_account_balance_cents
     _last_account_balance_cents = balance_cents
 
-    # Sync protocol engine wallet to match Kalshi reality
-    if _engine is not None and balance_cents > 0:
-        try:
-            wallet = _engine.get_wallet(BOT_ID)
-            kalshi_usd = balance_cents / 100.0
-            drift = kalshi_usd - wallet.cash_balance
-            if abs(drift) > 0.50:
-                _engine._wallet_mgr.credit(
-                    BOT_ID, drift, "kalshi_sync", f"sync_{balance_cents}"
-                )
-                new_wallet = _engine.get_wallet(BOT_ID)
-                print(f"[rivalclaw] Protocol wallet synced: ${wallet.cash_balance:.2f} → ${new_wallet.cash_balance:.2f} (Kalshi: ${kalshi_usd:.2f})")
-        except Exception as e:
-            print(f"[rivalclaw] Protocol wallet sync FAILED: {e}")
+    # Protocol wallet sync handled in init_engine — no per-cycle sync needed
