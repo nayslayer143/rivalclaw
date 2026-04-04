@@ -408,7 +408,11 @@ def route_trade(
     order_mode = "taker"
     brain_price = decision.entry_price  # Save original for tracking
 
-    if _should_use_maker(ticker, maker_cfg):
+    _use_maker = _should_use_maker(ticker, maker_cfg)
+    if not _use_maker and maker_cfg["enabled"]:
+        logger.warning("Maker SKIPPED for %s: resting=%d/%d fill_rate check",
+                       ticker[:25], executor.get_resting_count(), maker_cfg["max_resting"])
+    if _use_maker:
         order_mode = "maker"
         # Use actual market bid/ask from decision metadata if available
         # For NO trades: we want to buy NO, so we improve on the current no_ask
