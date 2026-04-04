@@ -356,6 +356,16 @@ def run_loop():
     # Merge equity index prices (Yahoo Finance) into spot_prices
     index_prices = index_feed.get_index_prices()
     spot_prices.update(index_prices)
+    # Merge real-time NWS observations — actual current temp overrides forecast-based spots
+    # This is our primary weather alpha: ground truth vs market's stale forecasts
+    try:
+        import observation_feed
+        nws_obs = observation_feed.get_all_observations()
+        for city_key, obs in nws_obs.items():
+            # Store as weather spot prices keyed by city
+            spot_prices[f"weather_{city_key.lower()}"] = obs["temp_f"]
+    except Exception as e:
+        print(f"[rivalclaw] NWS observations failed (non-fatal): {e}")
     # Log spot prices for realized vol computation (self-tuner)
     if spot_prices:
         conn = _get_conn()
