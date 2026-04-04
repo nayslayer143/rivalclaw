@@ -64,6 +64,9 @@ KALSHI_TAKER_FEE_RATE = float(os.environ.get("RIVALCLAW_KALSHI_FEE", "0.07"))
 REVERSE_SERIES = set(
     os.environ.get("RIVALCLAW_REVERSE_SERIES", "KXDOGE15M").split(",")
 )
+# Contrarian mode: flip ALL signals. If our model is a reliable contrarian indicator
+# (87% wrong on live), trading the opposite should be profitable.
+CONTRARIAN_MODE = os.environ.get("RIVALCLAW_CONTRARIAN_MODE", "0") == "1"
 # Entry price bounds — data-driven from 1,412 trades:
 #   NO 0.10-0.30 = sweet spot (60.8% WR, $225 of $226 live PnL)
 #   NO 0.70+ = "dumb zone" (win $0.18 avg, lose $0.88, need 5 wins per loss)
@@ -2911,11 +2914,15 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
                 stats["bid_gap_arb"] += 1
 
         if d:
-            # Attach market priority score for velocity-weighted ranking
+            # Attach market data for execution routing (maker mode uses bid/ask)
             if d.metadata is None:
                 d.metadata = {}
             d.metadata["priority_score"] = market.get("priority_score", 0)
             d.metadata["speed_category"] = market.get("speed_category", "unknown")
+            d.metadata["yes_bid"] = market.get("yes_bid")
+            d.metadata["yes_ask"] = market.get("yes_ask")
+            d.metadata["no_bid"] = market.get("no_bid")
+            d.metadata["no_ask"] = market.get("no_ask")
             decisions.append(d)
             if evt:
                 event_trade_count[evt] += 1
@@ -2951,11 +2958,11 @@ def analyze(markets: list[dict], wallet: dict[str, Any],
     parts = " ".join(f"{k}={v}" for k, v in sorted(stats.items()) if k != "integrity")
     print(f"[rivalclaw/brain] Signals: {parts} (total={len(hedged)})")
 
-    # Signal reversal — flip direction for anti-correlated series
+    # Signal reversal — flip direction for anti-correlated series (or ALL in contrarian mode)
     reversed_count = 0
     for d in hedged:
         series = d.market_id.split("-")[0] if d.market_id else ""
-        if series in REVERSE_SERIES:
+        if CONTRARIAN_MODE or series in REVERSE_SERIES:
             old_dir = d.direction
             if d.direction == "NO":
                 d.direction = "YES"

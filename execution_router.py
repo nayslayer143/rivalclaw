@@ -403,15 +403,41 @@ def route_trade(
     if cycle_id and cycle_id != _current_cycle_id:
         reset_cycle(cycle_id)
 
-    # ---- Maker mode: adjust entry price for better fills ----
+    # ---- Maker mode: price off real bid/ask, not model fair value ----
     maker_cfg = _get_maker_config()
     order_mode = "taker"
     brain_price = decision.entry_price  # Save original for tracking
 
     if _should_use_maker(ticker, maker_cfg):
         order_mode = "maker"
-        maker_entry = decision.entry_price * (1 - maker_cfg["offset_pct"])
-        decision.entry_price = max(maker_entry, 0.08)
+        # Use actual market bid/ask from decision metadata if available
+        # For NO trades: we want to buy NO, so we improve on the current no_ask
+        # by posting inside the spread (between no_bid and no_ask)
+        metadata = getattr(decision, "metadata", {}) or {}
+        yes_bid = metadata.get("yes_bid")
+        yes_ask = metadata.get("yes_ask")
+
+        if yes_bid and yes_ask and yes_bid > 0 and yes_ask > 0:
+            # Real spread data available — price inside the spread
+            if decision.direction == "NO":
+                # NO ask = 1 - yes_bid, NO bid = 1 - yes_ask
+                no_bid = 1.0 - yes_ask
+                no_ask = 1.0 - yes_bid
+                # Post inside the spread: midpoint biased toward bid (our side)
+                maker_entry = no_bid + (no_ask - no_bid) * 0.3  # 30% into spread from bid
+            else:
+                maker_entry = yes_bid + (yes_ask - yes_bid) * 0.3
+            decision.entry_price = max(maker_entry, 0.02)
+            logger.info("Maker priced off spread: %s %s bid=%.3f ask=%.3f → entry=%.3f",
+                        ticker[:25], decision.direction,
+                        no_bid if decision.direction == "NO" else yes_bid,
+                        no_ask if decision.direction == "NO" else yes_ask,
+                        decision.entry_price)
+        else:
+            # Fallback: offset from brain price
+            maker_entry = decision.entry_price * (1 - maker_cfg["offset_pct"])
+            decision.entry_price = max(maker_entry, 0.02)
+
         # Cancel any existing resting order on this ticker before posting new one
         cancelled = executor.cancel_resting_for_ticker(ticker)
         if cancelled:
