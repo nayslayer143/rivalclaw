@@ -50,12 +50,37 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", _SCRIPT_DIR / "rivalclaw.db"))
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-FAST_MODEL = os.environ.get("RIVALCLAW_CHAT_MODEL", "gemma4:31b")
+FAST_MODEL = os.environ.get("RIVALCLAW_CHAT_MODEL", "gemma4:e4b")
 DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "gemma4:31b")
 
 # TurboQuant server (llama.cpp with KV cache compression) for long-context tasks
 TURBOQUANT_BASE = os.environ.get("TURBOQUANT_BASE_URL", "http://localhost:8090")
 TURBOQUANT_MODEL = os.environ.get("TURBOQUANT_MODEL", "gemma4-31b-turboquant")
+
+
+def route_model(task_type: str = "fast") -> tuple[str, str]:
+    """
+    Route to the best model+endpoint for task type.
+    Returns (base_url, model_name).
+
+    Task types:
+      fast      → gemma4:e4b via Ollama (trade execution, quick eval)
+      deep      → gemma4:31b via Ollama (analysis, complex reasoning)
+      memory    → gemma4:31b via TurboQuant (log digestion, strategy evolution)
+    """
+    if task_type == "memory":
+        try:
+            resp = requests.get(f"{TURBOQUANT_BASE}/health", timeout=2)
+            if resp.status_code == 200:
+                return (TURBOQUANT_BASE + "/v1", TURBOQUANT_MODEL)
+        except Exception:
+            pass  # fall through to deep
+        return (OLLAMA_BASE, DEEP_MODEL)
+
+    if task_type == "deep":
+        return (OLLAMA_BASE, DEEP_MODEL)
+
+    return (OLLAMA_BASE, FAST_MODEL)
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POLL_INTERVAL = 5
@@ -355,35 +380,76 @@ def build_context() -> str:
 
 # ── Ollama API ───────────────────────────────────────────────────────────────
 
+def _llm_call(base_url: str, model: str, system: str, messages: list,
+              timeout: int = 30) -> str:
+    """Call Ollama or TurboQuant (OpenAI-compatible). Returns assistant text."""
+    is_turboquant = "8090" in base_url
+
+    if is_turboquant:
+        # OpenAI-compatible /v1/chat/completions
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                json={"model": model,
+                      "messages": [{"role": "system", "content": system}] + messages,
+                      "max_tokens": 1024, "temperature": 0.3},
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                return f"(TurboQuant error: {resp.status_code})"
+            data = resp.json()
+            msg = data.get("choices", [{}])[0].get("message", {})
+            return msg.get("content", "").strip() or msg.get("reasoning_content", "").strip() or "(empty)"
+        except requests.exceptions.Timeout:
+            return f"(TurboQuant timeout — {timeout}s)"
+        except requests.exceptions.ConnectionError:
+            return "(TurboQuant not reachable — is it running?)"
+        except Exception as e:
+            return f"(error: {e})"
+    else:
+        # Ollama native /api/chat
+        ollama_msgs = [{"role": "system", "content": system}] + messages
+        try:
+            resp = requests.post(
+                f"{base_url}/api/chat",
+                json={"model": model, "messages": ollama_msgs, "stream": False},
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                return f"(Ollama error: {resp.status_code})"
+            data = resp.json()
+            return data.get("message", {}).get("content", "").strip() or "(empty response)"
+        except requests.exceptions.Timeout:
+            return f"(Ollama timeout — {timeout}s. Try again.)"
+        except requests.exceptions.ConnectionError:
+            return "(Ollama not reachable — is it running?)"
+        except Exception as e:
+            return f"(error: {e})"
+
+
+# Legacy wrappers
 def _ollama_call(model: str, system: str, messages: list, timeout: int = 30) -> str:
-    """Call local Ollama. Returns assistant text."""
-    ollama_msgs = [{"role": "system", "content": system}] + messages
-    try:
-        resp = requests.post(
-            f"{OLLAMA_BASE}/api/chat",
-            json={"model": model, "messages": ollama_msgs, "stream": False},
-            timeout=timeout,
-        )
-        if resp.status_code != 200:
-            return f"(Ollama error: {resp.status_code})"
-        data = resp.json()
-        return data.get("message", {}).get("content", "").strip() or "(empty response)"
-    except requests.exceptions.Timeout:
-        return f"(Ollama timeout — {timeout}s. Try again.)"
-    except requests.exceptions.ConnectionError:
-        return "(Ollama not reachable — is it running?)"
-    except Exception as e:
-        return f"(error: {e})"
+    return _llm_call(OLLAMA_BASE, model, system, messages, timeout)
+
 
 def chat_fast(history: list, message: str, context: str) -> str:
+    base_url, model = route_model("fast")
     system = f"{SYSTEM_PROMPT}\n\n{context}"
     msgs = history[-_HISTORY_MAX:] + [{"role": "user", "content": message}]
-    return _ollama_call(FAST_MODEL, system, msgs, timeout=30)
+    return _llm_call(base_url, model, system, msgs, timeout=30)
 
 def chat_deep(history: list, message: str, context: str) -> str:
+    base_url, model = route_model("deep")
     system = f"{SYSTEM_PROMPT}\n\n{context}"
     msgs = history[-_HISTORY_MAX:] + [{"role": "user", "content": message}]
-    return _ollama_call(DEEP_MODEL, system, msgs, timeout=60)
+    return _llm_call(base_url, model, system, msgs, timeout=120)
+
+def chat_memory(history: list, message: str, context: str) -> str:
+    """Route to TurboQuant for long-context memory/strategy tasks."""
+    base_url, model = route_model("memory")
+    system = f"{SYSTEM_PROMPT}\n\n{context}"
+    msgs = history[-_HISTORY_MAX:] + [{"role": "user", "content": message}]
+    return _llm_call(base_url, model, system, msgs, timeout=300)
 
 # ── Escalation detection ────────────────────────────────────────────────────
 
