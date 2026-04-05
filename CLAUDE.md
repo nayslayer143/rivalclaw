@@ -425,8 +425,9 @@ Either result is valuable.
 - `*/5` — run.py --run (5-minute cycle)
 - `23:45` — daily-update.sh (daily report + git push)
 
-## Repos
+## Version Control
 
-- This instance: https://github.com/nayslayer143/rivalclaw
-- Lean baseline: https://github.com/nayslayer143/arbclaw
-- Main system: https://github.com/nayslayer143/clawmpson-logs
+- **Primary:** GitHub — `nayslayer143/rivalclaw`
+- **Mirrors:** GitLab (`jordan291/rivalclaw`), Gitea (local)
+- **Push:** Always use `git pushall` — see `~/.claude/CLAUDE.md` for full details
+- **Pull:** `git pull` pulls from GitHub (origin)
