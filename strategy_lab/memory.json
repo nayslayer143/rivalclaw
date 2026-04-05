@@ -129,6 +129,46 @@
       "action": "Allocate engineering resources to integrate the newly developed strategies (PassiveSpreadCapture, CrossPlatformArb) into the live trading pipeline for backtesting against the current regime.",
       "confidence": 0.9,
       "expires": "2026-04-15"
+    },
+    {
+      "id": "lesson-20260405-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows high success on closed trades (PNL > 0) when the edge is high (e.g., 0.874, 0.845), suggesting it works best when the market price is significantly misaligned from the calculated fair value.",
+      "evidence": "Trades with PNL > 0 occurred when edge was high (e.g., 0.874, 0.845); trades with PNL < 0 occurred when edge was lower (e.g., 0.123, 0.164).",
+      "action": "Filter future 'fair_value_directional' trades to only execute when the calculated 'edge' exceeds a threshold of 0.75.",
+      "confidence": 0.9,
+      "expires": null
+    },
+    {
+      "id": "lesson-20260405-2",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The strategy's status is 'degraded' despite recent profitable trades, indicating the underlying model or parameters need immediate review.",
+      "evidence": "Strategy 'fair_value_directional' is marked 'degraded' in strategy_registry, but recent trades show high profitability (e.g., 18.00, 26.33).",
+      "action": "Temporarily override the 'degraded' status for 'fair_value_directional' if the edge remains above 0.75, pending a full model review.",
+      "confidence": 0.85,
+      "expires": "2026-04-07"
+    },
+    {
+      "id": "lesson-20260405-5",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "Both systems are operating under conditions that favor high-frequency, short-term directional plays, indicated by QuantumentalClaw's focus on 'sprint' signals and RivalClaw's successful bracket trades.",
+      "evidence": "QuantumentalClaw dominated by 'sprint' signals; RivalClaw's best trades are 'fair_value_directional' brackets with short expiries (e.g., 10m, 23m).",
+      "action": "Prioritize signal fusion that explicitly models the transition from 'sprint' to 'day' signals, as this represents the most actionable regime shift.",
+      "confidence": 0.95,
+      "expires": null
+    },
+    {
+      "id": "lesson-20260405-6",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "The successful delivery of multiple complex, multi-venue arbitrage strategies (CrossPlatformArb, YesNoComplementArb, PassiveSpreadCapture) suggests the engineering pipeline for new strategies is robust.",
+      "evidence": "Multiple 'DELIVERED' work orders for complex, novel strategies (wo-2026-03-28-001, wo-2026-03-28-002, wo-2026-03-28-003).",
+      "action": "Allocate resources to immediately test these newly implemented strategies in a live, low-capital simulation environment to validate their real-world performance against the current 'fair_value_directional' success.",
+      "confidence": 0.9,
+      "expires": null
     }
   ]
 }
