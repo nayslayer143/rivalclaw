@@ -89,6 +89,46 @@
       "action": "Prioritize integrating the newly delivered 'PassiveSpreadCapture' strategy into the live trading pool, as it represents a novel, low-latency revenue stream.",
       "confidence": 0.95,
       "expires": "2026-04-12"
+    },
+    {
+      "id": "lesson-20260405-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows high win rates on successful trades (e.g., 26.3378 pnl) but also incurred losses on high-confidence, short-term trades (e.g., -3.06 pnl).",
+      "evidence": "Multiple trades with confidence >= 0.9 resulted in positive PnL (e.g., 18.00, 26.33), while high-confidence trades with short expiries resulted in losses (-3.06, -2.99).",
+      "action": "Implement a confidence-weighted filter that penalizes high-confidence trades if the time-to-expiry is below a certain threshold (e.g., 15 minutes).",
+      "confidence": 0.9,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260405-2",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy is highly profitable when the edge is high (e.g., 0.845, 0.899) and the bracket size is large (bkt=0.7x).",
+      "evidence": "Trades opened at 06:10, 02:07, 04:05, 03:06, 04:04, 04:09, 13:17, 12:11, 17:09, 16:08, 11:37, 11:37, 11:37, 11:37, 11:37, 11:37, 11:37, 11:37 all show high edge/bkt ratios and resulted in significant positive PnL.",
+      "action": "Prioritize trade execution for 'fair_value_directional' when 'edge' > 0.8 and 'bkt' > 0.4x, regardless of the absolute confidence score.",
+      "confidence": 0.95,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260405-5",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "RivalClaw's successful trades occurred across a wide range of timeframes (14m to 55m), while QuantumentalClaw's high-confidence signals were exclusively for 'sprint' time horizons.",
+      "evidence": "RivalClaw's best trades had moderate expiry times (14m-55m). Quantclaw's highest confidence signals were all 'sprint' (minutes).",
+      "action": "Cross-reference the time horizons: when Quantclaw signals 'sprint', RivalClaw should increase its focus on short-expiry, high-edge trades, as this appears to be the convergence point of high conviction.",
+      "confidence": 0.85,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260405-6",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "CodeMonkeyClaw successfully delivered multiple complex, production-ready strategies (Arb, Spread Capture, etc.) over the last week, indicating high engineering throughput.",
+      "evidence": "Multiple 'DELIVERED' work orders for complex strategies (wo-2026-03-28-004, wo-2026-03-28-003, wo-2026-03-28-002) and bugfixes/features for QuantumentalClaw.",
+      "action": "Allocate engineering resources to integrate the newly developed strategies (PassiveSpreadCapture, CrossPlatformArb) into the live trading pipeline for backtesting against the current regime.",
+      "confidence": 0.9,
+      "expires": "2026-04-15"
     }
   ]
 }
