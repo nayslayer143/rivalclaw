@@ -24,7 +24,7 @@ except ImportError:
     StrategyCatalog = None  # type: ignore[assignment,misc]
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("STRATEGY_LAB_MODEL", "qwen3:30b")
+OLLAMA_MODEL = os.environ.get("STRATEGY_LAB_MODEL", "gemma4:31b")
 MAX_HYPOTHESES = int(os.environ.get("STRATEGY_LAB_MAX_HYPOTHESES", "5"))
 MEMORY_PATH = Path(__file__).resolve().parent / "memory.json"
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "strategy_registry.json"

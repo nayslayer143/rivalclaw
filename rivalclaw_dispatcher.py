@@ -50,8 +50,12 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", _SCRIPT_DIR / "rivalclaw.db"))
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-FAST_MODEL = os.environ.get("RIVALCLAW_CHAT_MODEL", "qwen2.5:7b")
-DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "qwen2.5:14b")
+FAST_MODEL = os.environ.get("RIVALCLAW_CHAT_MODEL", "gemma4:31b")
+DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "gemma4:31b")
+
+# TurboQuant server (llama.cpp with KV cache compression) for long-context tasks
+TURBOQUANT_BASE = os.environ.get("TURBOQUANT_BASE_URL", "http://localhost:8090")
+TURBOQUANT_MODEL = os.environ.get("TURBOQUANT_MODEL", "gemma4-31b-turboquant")
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 POLL_INTERVAL = 5
