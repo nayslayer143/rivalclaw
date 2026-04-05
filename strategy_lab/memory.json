@@ -1,3 +1,44 @@
 {
-  "lessons": []
+  "lessons": [
+    {
+      "id": "lesson-20260405-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows high consistency in generating profitable trades when the edge is high (e.g., 0.888, 0.899), suggesting it performs well in predictable, high-edge environments.",
+      "evidence": "Multiple trades with confidence 0.9 and high edge values (0.760 to 0.899) resulted in significant positive PnL (e.g., 26.042, 26.3378).",
+      "action": "Increase the minimum required 'edge' threshold for 'fair_value_directional' to filter out lower-conviction trades.",
+      "confidence": 0.9,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260405-2",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "Trades with low 'edge' values (e.g., 0.164, 0.219) are correlated with losses, indicating the strategy is over-leveraging when predictive edge is weak.",
+      "evidence": "The trade with edge=0.164 resulted in a loss of -2.856, and the trade with edge=0.219 resulted in no PnL recorded but was flagged with low edge.",
+      "action": "Implement a hard stop-loss or minimum edge filter for any trade where 'edge' falls below 0.30, regardless of confidence score.",
+      "confidence": 0.95,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260405-5",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "Both systems are operating under conditions where high-confidence, short-term signals (sprint/day) are being generated, suggesting a period of high, actionable market activity.",
+      "evidence": "QuantumentalClaw shows multiple 'high' confidence, 'sprint' decisions; RivalClaw shows multiple high-confidence trades.",
+      "action": "Increase the capital allocation limit for strategies that perform well during 'sprint' cycles, as this appears to be the current profitable regime.",
+      "confidence": 0.9,
+      "expires": "2026-04-08"
+    },
+    {
+      "id": "lesson-20260405-6",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "The successful delivery of multiple complex, multi-venue arbitrage strategies (CrossPlatformArb, YesNoComplementArb, PassiveSpreadCapture) indicates the engineering pipeline is robust and capable of handling complex logic.",
+      "evidence": "Multiple 'DELIVERED' work orders for new, complex strategies across different repositories.",
+      "action": "Prioritize integrating the new strategies into the live testing/simulation environment immediately to validate real-world performance under load.",
+      "confidence": 0.95,
+      "expires": "2026-04-06"
+    }
+  ]
 }
