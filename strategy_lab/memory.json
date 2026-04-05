@@ -39,6 +39,56 @@
       "action": "Prioritize integrating the new strategies into the live testing/simulation environment immediately to validate real-world performance under load.",
       "confidence": 0.95,
       "expires": "2026-04-06"
+    },
+    {
+      "id": "lesson-20260405-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows high success when trades are executed early in the cycle (e.g., 02:07, 03:06, 04:05), suggesting performance degrades as the day progresses.",
+      "evidence": "Trades opened at 02:07, 03:06, and 04:05 show high confidence (0.9) and significant PnL gains (26.33, 26.04, 9.30) compared to later trades.",
+      "action": "Implement a time-decay weighting factor for 'fair_value_directional' trades, reducing weight for trades opened after 12:00 UTC.",
+      "confidence": 0.85,
+      "expires": "2026-04-12"
+    },
+    {
+      "id": "lesson-20260405-2",
+      "source": "rivalclaw",
+      "category": "calibration",
+      "insight": "High confidence trades (0.9+) are not guaranteeing profit, as evidenced by the recent loss (-2.99) despite high confidence (0.95) on a short-term trade.",
+      "evidence": "Trade opened at 03:54:50 with confidence 0.95 resulted in a loss of -2.99, while multiple 0.9 confidence trades yielded positive PnL.",
+      "action": "Introduce a minimum required edge/confidence threshold (e.g., 0.75) for execution, regardless of the raw confidence score, to filter out overconfident, low-edge trades.",
+      "confidence": 0.8,
+      "expires": "2026-04-12"
+    },
+    {
+      "id": "lesson-20260405-3",
+      "source": "rivalclaw",
+      "category": "latency",
+      "insight": "The cycle statistics show a very large maximum cycle time (4.2M ms), which might indicate stale or non-representative data points that skew performance metrics.",
+      "evidence": "max_cycle_ms: 4279295.89 ms, significantly higher than the average (228k ms).",
+      "action": "Filter cycle statistics to only include cycles within 3 standard deviations of the mean cycle time to normalize performance metrics.",
+      "confidence": 0.75,
+      "expires": "2026-04-12"
+    },
+    {
+      "id": "lesson-20260405-6",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "RivalClaw's strategy performance degradation (Lesson 1) coincides with QuantumentalClaw's module instability (Lesson 5), suggesting the market is entering a regime that invalidates current signal assumptions.",
+      "evidence": "RivalClaw shows declining performance throughout the day; QuantClaw's 'asymmetry' module accuracy is declining.",
+      "action": "Trigger a 'Regime Shift Alert' and temporarily halt all high-leverage strategies until both systems report convergence on a stable market state.",
+      "confidence": 0.92,
+      "expires": "2026-04-12"
+    },
+    {
+      "id": "lesson-20260405-7",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "CodeMonkeyClaw successfully delivered multiple complex, production-ready arbitrage and market-making strategies, indicating high engineering capacity.",
+      "evidence": "Multiple 'DELIVERED' work orders for complex strategies (PassiveSpreadCapture, CrossPlatformArb, YesNoComplementArb).",
+      "action": "Prioritize integrating the newly delivered 'PassiveSpreadCapture' strategy into the live trading pool, as it represents a novel, low-latency revenue stream.",
+      "confidence": 0.95,
+      "expires": "2026-04-12"
     }
   ]
 }
