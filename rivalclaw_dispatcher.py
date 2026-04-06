@@ -408,11 +408,18 @@ def _llm_call(base_url: str, model: str, system: str, messages: list,
             return f"(error: {e})"
     else:
         # Ollama native /api/chat
+        # keep_alive=-1 pins the model in VRAM across RivalClaw 5-min cycles,
+        # eliminating the 15-45s cold-start penalty on each cycle.
         ollama_msgs = [{"role": "system", "content": system}] + messages
         try:
             resp = requests.post(
                 f"{base_url}/api/chat",
-                json={"model": model, "messages": ollama_msgs, "stream": False},
+                json={
+                    "model": model,
+                    "messages": ollama_msgs,
+                    "stream": False,
+                    "keep_alive": os.environ.get("RIVALCLAW_KEEPALIVE", "-1"),
+                },
                 timeout=timeout,
             )
             if resp.status_code != 200:
