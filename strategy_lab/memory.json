@@ -169,6 +169,46 @@
       "action": "Allocate resources to immediately test these newly implemented strategies in a live, low-capital simulation environment to validate their real-world performance against the current 'fair_value_directional' success.",
       "confidence": 0.9,
       "expires": null
+    },
+    {
+      "id": "lesson-20260406-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows inconsistent performance, with high confidence trades (0.9+) yielding large wins but also significant losses (-2.499, -2.652), suggesting over-reliance on high confidence signals.",
+      "evidence": "Multiple trades with confidence >= 0.9 resulted in large positive PnL (e.g., 25.4296, 26.3378), but recent trades with high confidence (0.9) also resulted in losses (-2.499, -2.652).",
+      "action": "Implement a volatility filter or minimum edge threshold (e.g., edge > 0.1) before executing 'fair_value_directional' trades, regardless of confidence score.",
+      "confidence": 0.9,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260406-2",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy's performance is highly dependent on the specific contract/bracket, as evidenced by the wide range of PnL outcomes.",
+      "evidence": "PnL ranges from a high of 26.3378 to a low of -3.06, despite many trades using the same strategy and venue.",
+      "action": "Segment performance analysis for 'fair_value_directional' by contract type (e.g., specific strike/expiry) to identify which market conditions are most profitable.",
+      "confidence": 0.85,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260406-6",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "QuantumentalClaw's consistent high-confidence signals (0.85) suggest a strong directional conviction, which should be cross-referenced against RivalClaw's observed volatility patterns.",
+      "evidence": "Quantclaw: All recent decisions are 0.85 confidence. RivalClaw: Shows both large wins and losses, indicating underlying directional movement but also high noise.",
+      "action": "If Quantclaw signals high conviction (e.g., >0.80), only proceed with trades if RivalClaw's observed edge (Mkt - Fair) is also above a minimum threshold (e.g., 0.15).",
+      "confidence": 0.85,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260406-7",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "The successful delivery of multiple complex arbitrage and market-making strategies (wo-2026-03-28-001 to 003) indicates the engineering pipeline is robust for implementing new, complex logic.",
+      "evidence": "Multiple 'DELIVERED' work orders for complex strategies (YesNoComplementArb, CrossPlatformArb, PassiveSpreadCapture).",
+      "action": "Allocate resources to immediately test and integrate the newly developed strategies into the live trading pool, prioritizing those that address current performance gaps.",
+      "confidence": 0.9,
+      "expires": "2026-04-08"
     }
   ]
 }
