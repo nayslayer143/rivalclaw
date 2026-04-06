@@ -51,7 +51,7 @@ DB_PATH = Path(os.environ.get("RIVALCLAW_DB_PATH", _SCRIPT_DIR / "rivalclaw.db")
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 FAST_MODEL = os.environ.get("RIVALCLAW_CHAT_MODEL", "gemma4:e4b")
-DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "gemma4:31b")
+DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "gemma4:26b")
 
 # TurboQuant server (llama.cpp with KV cache compression) for long-context tasks
 TURBOQUANT_BASE = os.environ.get("TURBOQUANT_BASE_URL", "http://localhost:8090")
@@ -65,8 +65,8 @@ def route_model(task_type: str = "fast") -> tuple[str, str]:
 
     Task types:
       fast      → gemma4:e4b via Ollama (trade execution, quick eval)
-      deep      → gemma4:31b via Ollama (analysis, complex reasoning)
-      memory    → gemma4:31b via TurboQuant (log digestion, strategy evolution)
+      deep      → gemma4:26b-A4B (MoE) via Ollama (analysis, complex reasoning)
+      memory    → gemma4:26b-A4B (MoE) via TurboQuant (log digestion, strategy evolution)
     """
     if task_type == "memory":
         try:
