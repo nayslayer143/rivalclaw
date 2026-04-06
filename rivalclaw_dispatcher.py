@@ -410,6 +410,9 @@ def _llm_call(base_url: str, model: str, system: str, messages: list,
         # Ollama native /api/chat
         # keep_alive=-1 pins the model in VRAM across RivalClaw 5-min cycles,
         # eliminating the 15-45s cold-start penalty on each cycle.
+        # num_ctx override is critical: without it, Ollama auto-detects 256K
+        # on our 96 GB machine → 34 GB KV cache thrash. 16K is plenty for
+        # RivalClaw's short prompts and matches CodeMonkeyClaw's default.
         ollama_msgs = [{"role": "system", "content": system}] + messages
         try:
             resp = requests.post(
@@ -419,6 +422,9 @@ def _llm_call(base_url: str, model: str, system: str, messages: list,
                     "messages": ollama_msgs,
                     "stream": False,
                     "keep_alive": os.environ.get("RIVALCLAW_KEEPALIVE", "-1"),
+                    "options": {
+                        "num_ctx": int(os.environ.get("RIVALCLAW_NUM_CTX", "16384")),
+                    },
                 },
                 timeout=timeout,
             )

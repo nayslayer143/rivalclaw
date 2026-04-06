@@ -108,7 +108,8 @@ def _call_ollama(prompt: str) -> str | None:
         resp = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.7, "num_predict": 4096}},
+                  "options": {"temperature": 0.7, "num_predict": 4096,
+                              "num_ctx": int(os.environ.get("RIVALCLAW_NUM_CTX", "16384"))}},
             timeout=120,
         )
         resp.raise_for_status()
