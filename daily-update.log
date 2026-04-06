@@ -1016,3 +1016,108 @@ After doing this, you may fix the identity used for this commit with:
 [rivalclaw/daily] Done.
 [rivalclaw/daily] Report written: /Users/nayslayer/rivalclaw/daily/2026-04-06.md
 [rivalclaw/daily] Running Strategy Lab research cycle...
+STRATEGY LAB — Research Cycle 20260406-1100
+============================================================
+
+[1/3] Running diagnostics...
+[strategy_lab/diagnose] Report saved: /Users/nayslayer/rivalclaw/strategy_lab/reports/diagnostic-2026-04-06.json
+  → 15 strategies analyzed, 0 drift flags, 10 missed opps
+
+[2/3] Generating hypotheses...
+Traceback (most recent call last):
+  File "/Users/nayslayer/rivalclaw/strategy_lab/run_cycle.py", line 195, in <module>
+    main()
+  File "/Users/nayslayer/rivalclaw/strategy_lab/run_cycle.py", line 191, in main
+    run_full_cycle()
+  File "/Users/nayslayer/rivalclaw/strategy_lab/run_cycle.py", line 68, in run_full_cycle
+    hypotheses = generate_hypotheses(diagnostic)
+  File "/Users/nayslayer/rivalclaw/strategy_lab/hypothesize.py", line 230, in generate_hypotheses
+    suggestions = _catalog_suggestions(diagnostic)
+  File "/Users/nayslayer/rivalclaw/strategy_lab/hypothesize.py", line 184, in _catalog_suggestions
+    name = s.get("name", "").lower()
+AttributeError: 'str' object has no attribute 'get'
+[rivalclaw/daily] Strategy Lab cycle failed (non-fatal)
+[strategy_lab/daily_report] Saved: /Users/nayslayer/rivalclaw/daily/strategy-lab-2026-04-06.md
+# Strategy Lab Report — 2026-04-06
+
+## 1. System Health
+
+| Status | Count |
+|--------|-------|
+| production | 3 |
+| degraded | 5 |
+| **Total** | **8** |
+
+## 2. Key Findings
+
+- **Top performer:** polymarket_convergence — $+99306.70 PnL, 14% WR
+- **Worst performer:** forecast_delta — $-2201.81 PnL, 28% WR
+- **Regime calm:** 31651 trades, $+204105.17 PnL
+- **Signal calibration:** overconfident (confidence 0.86 vs actual 0.13)
+
+## 3. Candidate Hypotheses
+
+- No hypotheses generated this cycle
+
+## 4. Evaluation Results
+
+- No backtests completed
+
+## 5. Promotions / Demotions
+
+- No state changes today
+
+## 6. Memory Updates
+
+- [?] 
+- [?] 
+- [?] 
+- [?] 
+- [?] 
+
+## 7. Next Actions
+
+- Missed: Will the temp in NYC be above 41.99° on Mar 28, 20 (Δ100%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Missed: Ethereum price at Mar 25, 2026 at 8pm EDT? (Δ99%)
+- Continue data collection for next research cycle
+
+## 8. Weekly Cemetery Review
+
+### Degraded / Retired Strategies
+
+- **fair_value_directional_v1.0** (degraded) — initial production version — proven 50% WR, 2.7x ratio
+- **spot_momentum_v1.0** (degraded) — initial production version — ride crypto trends into lagging contracts
+- **cross_strike_arb_v1.0** (degraded) — initial production version — bracket sum deviation from 1.0
+- **mean_reversion_v1.0** (degraded) — initial production version — bet against crowd near 0.50, 15-min crypto
+- **time_decay_v1.0** (degraded) — initial production version — proven 5.1x ratio, sell overpriced near-expiry
+
+### Recurring Failure Patterns
+
+- **unknown**: 26 failures — 
+
+
+### Complexity Check
+
+- Production: 3 strategies
+- Shadow: 0 candidates
+- Probation: 0 candidates
+- Cemetery: 5 strategies
+- **Total variants: 8** (watch for >20 = complexity creep)
+
+[feat/kalshi-live-bridge 18d3208] daily report 2026-04-06 — day 14 | bal=$41955.186 pnl=$31982.67 trades=2068
+ Committer: Jordan Schuster <nayslayer@jordans-mbp-2.lan>
+Your name and email address were configured automatically based
+on your username and hostname. Please check that they are accurate.
+You can suppress this message by setting them explicitly:
+
+    git config --global user.name "Your Name"
+    git config --global user.email you@example.com
+
+After doing this, you may fix the identity used for this commit with:
+
+    git commit --amend --reset-author
+
+ 1 file changed, 66 insertions(+)
+ create mode 100644 daily/strategy-lab-2026-04-06.md
+[rivalclaw/daily] Done.
