@@ -55,7 +55,7 @@ DEEP_MODEL = os.environ.get("RIVALCLAW_DEEP_MODEL", "gemma4:26b")
 
 # TurboQuant server (llama.cpp with KV cache compression) for long-context tasks
 TURBOQUANT_BASE = os.environ.get("TURBOQUANT_BASE_URL", "http://localhost:8090")
-TURBOQUANT_MODEL = os.environ.get("TURBOQUANT_MODEL", "gemma4-31b-turboquant")
+TURBOQUANT_MODEL = os.environ.get("TURBOQUANT_MODEL", "gemma4-26b-turboquant")
 
 
 def route_model(task_type: str = "fast") -> tuple[str, str]:
