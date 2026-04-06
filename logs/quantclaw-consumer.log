@@ -422,3 +422,19 @@
   warnings.warn(
 2026-04-06 02:25:01,159 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
 2026-04-06 02:25:01,159 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-06 02:30:01,188 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-06 02:30:01,188 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-06 02:35:01,168 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-06 02:35:01,168 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-06 02:40:00,865 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-06 02:40:00,865 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-06 02:45:00,667 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-06 02:45:00,667 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
