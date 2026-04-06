@@ -209,6 +209,56 @@
       "action": "Allocate resources to immediately test and integrate the newly developed strategies into the live trading pool, prioritizing those that address current performance gaps.",
       "confidence": 0.9,
       "expires": "2026-04-08"
+    },
+    {
+      "id": "lesson-20260406-1",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The 'fair_value_directional' strategy shows consistent profitability when trades are closed, suggesting the underlying edge calculation remains valid in the current market structure.",
+      "evidence": "Multiple trades with realized PnL (e.g., 17.348, 8.5316, 15.4296, 25.4296) occurred, indicating successful exits.",
+      "action": "Increase the minimum required edge threshold for 'fair_value_directional' trades to filter out marginal entries, especially given the high number of open, unclosed positions.",
+      "confidence": 0.9,
+      "expires": "2026-04-10"
+    },
+    {
+      "id": "lesson-20260406-2",
+      "source": "rivalclaw",
+      "category": "strategy",
+      "insight": "The strategy registry indicates multiple core arbitrage/mean-reversion strategies are marked 'degraded', suggesting systemic performance decay across multiple models.",
+      "evidence": "Status: 'degraded' for 'fair_value_directional', 'spot_momentum', 'cross_strike_arb', 'mean_reversion', 'time_decay'.",
+      "action": "Prioritize root cause analysis on the 'degraded' strategies; do not rely on them until performance metrics stabilize above historical averages.",
+      "confidence": 0.95,
+      "expires": "2026-04-07"
+    },
+    {
+      "id": "lesson-20260406-3",
+      "source": "rivalclaw",
+      "category": "calibration",
+      "insight": "High confidence (0.9) trades are not guaranteeing wins, as evidenced by the mix of large wins and small losses across the day's activity.",
+      "evidence": "Multiple 0.9 confidence trades resulted in PnL=null (open) or small losses (-2.57, -2.65), while profitable trades had varying confidence levels.",
+      "action": "Implement a risk-adjusted confidence filter: only execute trades where (Confidence * Edge) > Threshold, rather than relying solely on high confidence.",
+      "confidence": 0.85,
+      "expires": "2026-04-07"
+    },
+    {
+      "id": "lesson-20260406-6",
+      "source": "cross-system",
+      "category": "regime",
+      "insight": "Both systems are operating in a 'sprint' time horizon for signals, suggesting the current market regime is characterized by short-term, high-frequency opportunities.",
+      "evidence": "Quantclaw decisions are exclusively for 'sprint' horizon; RivalClaw trades are predominantly short-expiry/short-term bracket trades.",
+      "action": "Increase monitoring frequency for signals that span the 'day' or 'week' horizon, as the current focus on 'sprint' might cause over-optimization to noise.",
+      "confidence": 0.9,
+      "expires": "2026-04-08"
+    },
+    {
+      "id": "lesson-20260406-7",
+      "source": "cross-system",
+      "category": "engineering",
+      "insight": "CodeMonkeyClaw has successfully delivered several complex, production-ready strategies (Arb, Spread Capture), indicating high engineering throughput capacity.",
+      "evidence": "Multiple 'DELIVERED' work orders for complex strategies (e.g., wo-2026-03-28-003, wo-2026-03-28-002).",
+      "action": "Allocate engineering resources to integrate the newly developed strategies (PassiveSpreadCapture, CrossPlatformArb) into the live trading pipeline for immediate testing.",
+      "confidence": 0.95,
+      "expires": "2026-04-07"
     }
   ]
 }
