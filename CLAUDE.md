@@ -273,6 +273,10 @@ LLM must NOT:
 - override scoring rules
 - bypass risk filters
 
+### Codex (OpenAI) — restricted, same rules
+
+OpenAI Codex is available via the `codex@openai-codex` Claude Code plugin (user-scope install, auto-present in this session). Codex is bound by the **same restrictions** as any other LLM in RivalClaw — it does not generate signals, override scoring, or touch risk filters. Allowed uses: `/codex:review` or `/codex:adversarial-review` on code changes, `/codex:rescue` when stuck. Never use Codex output as a substitute for the deterministic scoring pipeline. Full plugin reference: `~/.claude/CLAUDE.md` → "Codex Plugin (OpenAI)".
+
 ---
 
 ## Standard Output Contract
