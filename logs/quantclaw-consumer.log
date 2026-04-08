@@ -2230,3 +2230,35 @@
   warnings.warn(
 2026-04-07 20:45:01,664 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
 2026-04-07 20:45:01,664 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 20:50:01,131 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 20:50:01,131 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 20:55:01,014 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 20:55:01,014 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:00:01,424 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:00:01,424 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:05:01,994 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:05:01,994 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:10:01,610 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:10:01,610 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:15:01,529 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:15:01,530 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:20:01,238 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:20:01,239 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
+/Users/nayslayer/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-07 21:25:01,196 [rivalclaw.quantclaw-consumer] INFO: Queue DB not found — nothing to process
+2026-04-07 21:25:01,196 [rivalclaw.quantclaw-consumer] INFO: Done — processed 0 signal(s)
